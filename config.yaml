@@ -1,0 +1,91 @@
+# MCM/ICM 论文获奖等级预测 - 配置文件
+
+# 数据路径
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  models_dir: "data/models"
+  
+# PDF 解析配置
+pdf_parser:
+  min_image_size: 50  # 最小图片尺寸（像素）
+  max_images_per_paper: 50  # 每篇论文最多提取图片数
+  abstract_keywords: ["Abstract", "ABSTRACT", "Summary", "SUMMARY"]
+  intro_keywords: ["Introduction", "INTRODUCTION", "1.", "1 "]
+  
+# 文本特征配置
+text_features:
+  model_name: "all-MiniLM-L6-v2"  # sentence-transformers 模型
+  embedding_dim: 384
+  max_abstract_length: 2000  # 最大摘要字符数
+  
+# 图像特征配置
+image_features:
+  model_name: "resnet18"
+  feature_dim: 512
+  image_size: 224
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+  
+# 分类器配置
+classifier:
+  algorithm: "xgboost"
+  num_classes: 4  # O+F, M, H, S
+  class_names: ["O+F", "M", "H", "S"]
+  
+  # XGBoost 超参数
+  xgboost:
+    max_depth: 4
+    learning_rate: 0.05
+    n_estimators: 200
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 3
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    eval_metric: "mlogloss"
+    
+  # 训练配置
+  training:
+    cv_folds: 5
+    test_size: 0.2
+    random_state: 42
+    use_smote: true
+    
+# 爬虫配置
+crawler:
+  base_url: "https://www.contest.comap.com"
+  years: [2020, 2021, 2022, 2023, 2024, 2025]
+  problems:
+    MCM: ["A", "B", "C"]
+    ICM: ["D", "E", "F"]
+  max_papers_per_problem: 30  # 每个题目最多爬取的论文数
+  
+# 标签映射
+label_mapping:
+  "Outstanding Winner": "O"
+  "Finalist": "F"
+  "Meritorious Winner": "M"
+  "Honorable Mention": "H"
+  "Successful Participant": "S"
+  
+# 合并标签（O 和 F 样本太少，合并为一类）
+merge_labels:
+  "O": "O+F"
+  "F": "O+F"
+
+# 概率模型配置 (v2)
+probability_model:
+  version: "v2_enhanced"
+  # 贝叶斯推断中各信号的权重
+  signal_weights:
+    similarity: 1.0          # 相似度信号（最核心）
+    structure_quality: 0.25  # 结构质量调整强度
+    problem_fit: 0.12        # 题目适配度调整强度
+    competition: 0.08        # 竞争强度调整
+  
+  # 是否使用题目特定的先验概率
+  use_problem_specific_prior: true
+  
+  # 是否自动检测题目类型
+  auto_detect_problem: true
