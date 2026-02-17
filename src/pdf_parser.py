@@ -157,6 +157,8 @@ class PDFParser:
         1. 遍历每一页
         2. 提取嵌入的图片
         3. 过滤太小的图片（可能是 logo 或装饰）
+        4. 过滤纯白/纯黑/纯灰色图片（可能是背景遮罩）
+        5. 过滤极端宽高比图片（可能是分隔线或页眉装饰）
         """
         images = []
         
@@ -181,9 +183,18 @@ class PDFParser:
                     if pil_image.width < self.min_image_size or pil_image.height < self.min_image_size:
                         continue
                     
+                    # 过滤极端宽高比（分隔线、页眉装饰等）
+                    aspect = pil_image.width / max(pil_image.height, 1)
+                    if aspect > 15 or aspect < 1/15:
+                        continue
+                    
                     # 转换为 RGB（如果是 RGBA 或其他格式）
                     if pil_image.mode != 'RGB':
                         pil_image = pil_image.convert('RGB')
+                    
+                    # 过滤纯色/近纯色图片（背景遮罩等）
+                    if self._is_trivial_image(pil_image):
+                        continue
                     
                     images.append(pil_image)
                     
@@ -191,8 +202,24 @@ class PDFParser:
                     print(f"  提取图片失败 (页 {page_num}, 图 {img_index}): {e}")
                     continue
         
-        print(f"  提取了 {len(images)} 张图片")
+        print(f"  提取了 {len(images)} 张有效图片（已过滤装饰/纯色/极小图片）")
         return images
+    
+    def _is_trivial_image(self, img: Image.Image) -> bool:
+        """
+        判断图片是否为无意义的纯色/近纯色图片
+        
+        - 采样缩小到 20x20 检查像素方差
+        - 方差极小说明是纯色/近纯色背景
+        """
+        try:
+            small = img.resize((20, 20))
+            pixels = np.array(small, dtype=np.float32)
+            # 所有通道的标准差之和
+            total_std = pixels.std()
+            return total_std < 5.0  # 方差很小 → 纯色
+        except Exception:
+            return False
     
     def extract_metadata(self, doc: fitz.Document, pdf_path: str) -> Dict:
         """
@@ -291,13 +318,43 @@ class PDFParser:
         formula_count = max(1, formula_count // 2) if formula_count > 0 else 0
         structure['formula_count'] = formula_count
         
-        # 表格检测: "Table 1", "Table 2" 等
-        table_matches = re.findall(r'\bTable\s+\d+', full_text, re.IGNORECASE)
-        structure['table_count'] = len(set(table_matches))
+        # 表格检测: 多种格式, 只匹配标题行（排除引用处的 "Table 1"）
+        # "Table 1:", "Table 1.", "TABLE I", "Tab. 1" 等标题格式
+        table_caption_patterns = [
+            r'(?mi)^\s*Table\s+\d+[\s.:：]',              # 行首 Table 1: / Table 1.
+            r'(?mi)^\s*TABLE\s+[IVXLCD]+[\s.:：]',         # 行首 TABLE I:
+            r'(?mi)^\s*Tab\.?\s+\d+[\s.:：]',              # Tab. 1:
+        ]
+        table_ids = set()
+        for pat in table_caption_patterns:
+            for m in re.finditer(pat, full_text):
+                # 提取标识符进行去重
+                table_ids.add(m.group().strip().lower())
         
-        # 图表标题检测: "Figure 1", "Fig. 1" 等
-        figure_matches = re.findall(r'\b(?:Figure|Fig\.?)\s+\d+', full_text, re.IGNORECASE)
-        structure['figure_caption_count'] = len(set(figure_matches))
+        # 补充: 计算文中所有不同编号的 Table 引用，取标题数和引用编号数的较大值
+        table_ref_nums = set()
+        for m in re.finditer(r'\bTable\s+(\d+)\b', full_text, re.IGNORECASE):
+            table_ref_nums.add(m.group(1))
+        
+        structure['table_count'] = max(len(table_ids), len(table_ref_nums))
+        
+        # 图表标题检测: 多种格式, 行首匹配优先
+        figure_caption_patterns = [
+            r'(?mi)^\s*Figure\s+\d+[\s.:：]',             # 行首 Figure 1:
+            r'(?mi)^\s*FIGURE\s+\d+[\s.:：]',             # 行首 FIGURE 1:
+            r'(?mi)^\s*Fig\.?\s+\d+[\s.:：]',              # Fig. 1: / Fig 1.
+        ]
+        figure_ids = set()
+        for pat in figure_caption_patterns:
+            for m in re.finditer(pat, full_text):
+                figure_ids.add(m.group().strip().lower())
+        
+        # 补充: 不同编号的 Figure 引用
+        figure_ref_nums = set()
+        for m in re.finditer(r'\b(?:Figure|Fig\.?)\s+(\d+)\b', full_text, re.IGNORECASE):
+            figure_ref_nums.add(m.group(1))
+        
+        structure['figure_caption_count'] = max(len(figure_ids), len(figure_ref_nums))
         
         # 总字数
         words = full_text.split()

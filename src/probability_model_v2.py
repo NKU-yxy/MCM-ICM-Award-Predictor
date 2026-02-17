@@ -169,9 +169,10 @@ class EnhancedAwardEstimator:
         )
         
         # ========== 第3步: 加权融合 ==========
-        # 分数可靠时以分数为主(70%)，贝叶斯提供题目特异性调整(30%)
-        w_score = 0.70
-        w_bayes = 0.30
+        # 提升贝叶斯权重以利用 COMAP 真实获奖比例做校准
+        # 避免分数信号过度主导导致预测偏高
+        w_score = 0.45
+        w_bayes = 0.55
         
         posteriors = {}
         for award in ['O', 'F', 'M', 'H', 'S']:
@@ -225,12 +226,15 @@ class EnhancedAwardEstimator:
         # 高斯混合模型参数（根据训练/验证集 O 奖论文的分数分布标定）
         # 峰值: 该分数最可能对应的奖项
         # 扩展: 分布的宽度（越低越严格）
+        # 注意: O奖训练集均分~85, 验证集~79-80
+        # 真实分布: O~0.2%, F~1%, M~8%, H~17%, S~72%
+        # 峰值需要充分拉开, 让大多数论文落入 H/S 区间
         award_params = {
-            'O': {'peak': 93, 'spread': 5.0},
-            'F': {'peak': 87, 'spread': 5.0},
-            'M': {'peak': 80, 'spread': 6.0},
-            'H': {'peak': 70, 'spread': 7.0},
-            'S': {'peak': 55, 'spread': 9.0},
+            'O': {'peak': 97, 'spread': 3.0},
+            'F': {'peak': 93, 'spread': 3.5},
+            'M': {'peak': 86, 'spread': 4.5},
+            'H': {'peak': 75, 'spread': 5.5},
+            'S': {'peak': 58, 'spread': 8.0},
         }
         
         logits = {}
@@ -264,12 +268,13 @@ class EnhancedAwardEstimator:
         # 相似度似然
         likelihoods = self._compute_similarity_likelihoods(similarity)
         
-        # 软化先验: 30% COMAP + 70% 平坦
+        # 软化先验: 60% COMAP + 40% 平坦
+        # 保留更多真实获奖比例信息, 避免 S 的先验被过度稀释
         comap_priors = get_award_prior(problem, year)
-        flat_priors = {'O': 0.10, 'F': 0.15, 'M': 0.25, 'H': 0.25, 'S': 0.25}
+        flat_priors = {'O': 0.08, 'F': 0.12, 'M': 0.20, 'H': 0.25, 'S': 0.35}
         
         priors = {}
-        blend = 0.30  # COMAP 先验的保留比例
+        blend = 0.60  # COMAP 先验的保留比例 (从0.30提升到0.60)
         for award in comap_priors:
             priors[award] = (
                 blend * comap_priors[award] + 

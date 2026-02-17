@@ -404,6 +404,32 @@ class AwardPredictor:
             fig_diff.append(f"图表标题数仅{fig_captions}个，O奖通常有10+个清晰的图表标题")
         if table_count == 0:
             fig_diff.append("未检测到表格，O奖论文通常有数据对比表格")
+        
+        # 新增：图片画风/质量分析
+        img_stats = image_result.get('statistical_features', np.zeros(18))
+        if len(img_stats) >= 18 and n_imgs > 0:
+            chart_ratio = img_stats[6]
+            professional = img_stats[13]
+            high_res_ratio = img_stats[17]
+            color_ratio = img_stats[9]
+            
+            if chart_ratio < 0.3:
+                fig_diff.append(f"图表类图片比例偏低({chart_ratio:.0%})，照片/装饰图较多，建议增加专业图表")
+                fig_score *= 0.92
+            elif chart_ratio > 0.6:
+                fig_diff.append(f"图表类图片占比{chart_ratio:.0%}，图表画风专业")
+            
+            if professional < 0.3:
+                fig_diff.append("图片整体专业度偏低，建议使用矢量图/高对比度配色")
+                fig_score *= 0.90
+            elif professional > 0.6:
+                fig_diff.append("图片专业度较高（对比度、排版一致性好）")
+            
+            if high_res_ratio < 0.5:
+                fig_diff.append(f"高分辨率图片仅占{high_res_ratio:.0%}，建议提升图表清晰度")
+            
+            if color_ratio > 0.7:
+                fig_diff.append("大部分为彩色图表，视觉效果好")
 
         fig_score = float(np.clip(fig_score, 0, 100))
         scores['figures'] = round(fig_score, 1)

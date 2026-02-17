@@ -50,11 +50,11 @@ class FeatureFusion:
           2. text_stats (6维) - 文本统计特征，权重 0.3
           3. text_structural (12维) - 文本结构特征，权重 0.5 (新增，重要)
           4. image_deep (512维) - 图像深度特征，权重 0.8
-          5. image_stats (6维) - 图像统计特征，权重 0.3
+          5. image_stats (18维) - 图像统计特征（含画风分析），权重 0.5
           6. meta (10维) - 元数据特征，权重 0.3
         
         返回：
-            融合后的特征向量 (~930维)
+            融合后的特征向量 (~942维)
         """
         # 获取各组维度
         text_embed_dim = self.config['text_features']['embedding_dim']  # 384
@@ -83,7 +83,7 @@ class FeatureFusion:
         
         groups.extend([
             (image_deep,   0.8),   # 图像深度特征
-            (image_stats,  0.3),   # 图像统计
+            (image_stats,  0.5),   # 图像统计 - 含画风分析，权重提升
             (meta_features, 0.3),  # 元数据
         ])
         
