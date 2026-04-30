@@ -34,6 +34,11 @@ from src.probability_model_v2 import EnhancedAwardEstimator
 from src.problem_detector import ProblemDetector, detect_problem
 from src.award_prior import get_award_prior, get_problem_profile, list_available_data
 from src.ocsvm_scorer import OCSVMScorer
+from src.mcm_relevance import (
+    LightweightSemanticEncoder,
+    MCMRelevanceDetector,
+    make_non_mcm_result,
+)
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -71,9 +76,18 @@ class AwardPredictor:
         
         # 初始化各模块
         self.pdf_parser = PDFParser()
-        self.text_extractor = TextFeatureExtractor()
+        semantic_params = self.model_data.get('semantic_encoder')
+        self.semantic_encoder = (
+            LightweightSemanticEncoder(params=semantic_params)
+            if semantic_params else None
+        )
+        self.text_extractor = TextFeatureExtractor(semantic_encoder=self.semantic_encoder)
         self.image_extractor = ImageFeatureExtractor()
         self.problem_detector = ProblemDetector()
+        self.relevance_detector = MCMRelevanceDetector(
+            encoder=self.semantic_encoder,
+            params=self.model_data.get('mcm_relevance_model'),
+        )
         
         # 初始化 OC-SVM 打分器（如有）
         ocsvm_params = self.model_data.get('ocsvm_scorer')
@@ -157,6 +171,32 @@ class AwardPredictor:
             images = parsed['images']
             structure = parsed.get('structure', {})
             metadata = parsed.get('metadata', {})
+            detection = self.problem_detector.detect(full_text, pdf_path, year)
+            relevance = self.relevance_detector.evaluate(
+                full_text=full_text,
+                structure=structure,
+                metadata=metadata,
+                detection=detection,
+            )
+            if not relevance.get('is_mcm', False):
+                result = make_non_mcm_result(
+                    reason=relevance.get('rejection_reason', '非美赛PDF，不予评奖'),
+                    relevance=relevance,
+                )
+                result['metadata'] = {
+                    'abstract_length': len(abstract),
+                    'full_text_length': len(full_text),
+                    'image_count': len(images),
+                    'page_count': metadata.get('page_count', 0),
+                    'ref_count': metadata.get('ref_count', 0),
+                    'structure': structure,
+                }
+                result['relevance_details'] = relevance
+                if verbose:
+                    logger.info(
+                        f"  非美赛PDF，不予评奖 (relevance={relevance.get('mcm_relevance', 0):.2f})"
+                    )
+                return result
             
             if verbose:
                 logger.info(f"    ✓ 摘要: {len(abstract)} 字符")
@@ -174,7 +214,7 @@ class AwardPredictor:
                 if not problem:
                     problem = detection.get('problem', 'A')
                 if not year:
-                    year = detection.get('year') or self.problem_detector.detect_year(full_text, pdf_path) or 2024
+                    year = detection.get('year') or self.problem_detector.detect_year(full_text, pdf_path) or 2025
                 
                 contest = detection.get('contest', 'MCM' if problem in 'ABC' else 'ICM')
                 confidence = detection.get('confidence', 0.5)
@@ -276,6 +316,9 @@ class AwardPredictor:
                 'quality_tier': quality_tier,
                 'emoji': emoji,
                 'description': description,
+                'is_mcm': True,
+                'mcm_relevance': float(relevance.get('mcm_relevance', 1.0)),
+                'relevance_details': relevance,
                 'metadata': {
                     'abstract_length': len(abstract),
                     'full_text_length': len(full_text),

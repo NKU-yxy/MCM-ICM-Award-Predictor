@@ -407,6 +407,7 @@ body::before {
     <div class="control-group">
       <label for="problemSelect">题目 Problem</label>
       <select id="problemSelect">
+        <option value="auto" selected>Auto</option>
         <option value="A">A — 连续型</option>
         <option value="B">B — 离散型</option>
         <option value="C">C — 数据科学</option>
@@ -606,7 +607,7 @@ submitBtn.addEventListener('click', async () => {
   const fd = new FormData();
   fd.append('file', selectedFile);
   fd.append('problem', $('problemSelect').value);
-  fd.append('year', '2026');
+  fd.append('year', 'auto');
 
   try {
     const r = await fetch('/api/predict', { method: 'POST', body: fd });
@@ -627,6 +628,27 @@ function showError(m) { errorMsg.textContent = m; errorMsg.classList.add('active
 // ==========================================================================
 function renderResults(d) {
   const { score, probabilities, aspect_scores, aspect_details, problem, contest, year, quality_tier, emoji, description, metadata, structure } = d;
+
+  if (d.is_mcm === false) {
+    resultsDiv.innerHTML = `
+      <div class="result-card">
+        <div class="score-hero">
+          <div class="score-meta">
+            <h2>非美赛PDF</h2>
+            <span class="tier-tag">不予评奖</span>
+            <div class="info" style="margin-top:10px;">${d.rejection_reason || d.message || '非美赛PDF，不予评奖'}</div>
+            <div class="info">MCM/ICM relevance: ${((d.mcm_relevance || 0) * 100).toFixed(0)}%</div>
+          </div>
+        </div>
+        <div class="meta-stats">
+          页数: ${metadata?.page_count || 0} &middot;
+          图片: ${metadata?.image_count || 0} &middot;
+          摘要字符: ${metadata?.abstract_length || 0}
+        </div>
+      </div>`;
+    resultsDiv.classList.add('active');
+    return;
+  }
 
   const awardNames = { O:'特等奖 O', F:'特等提名 F', M:'一等奖 M', H:'二等奖 H', S:'成功参赛 S' };
   let best = 'S', bestP = 0;

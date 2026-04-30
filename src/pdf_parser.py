@@ -26,6 +26,8 @@ class PDFParser:
         self.pdf_config = self.config['pdf_parser']
         self.min_image_size = self.pdf_config['min_image_size']
         self.max_images = self.pdf_config['max_images_per_paper']
+        self.render_vector_figures = bool(self.pdf_config.get('render_vector_figures', False))
+        self.max_image_pixels = int(self.pdf_config.get('max_image_pixels', 8000000))
         self.abstract_keywords = self.pdf_config['abstract_keywords']
         self.intro_keywords = self.pdf_config['intro_keywords']
     
@@ -182,6 +184,11 @@ class PDFParser:
                 try:
                     xref = img[0]
                     base_image = doc.extract_image(xref)
+                    width = int(base_image.get("width", 0) or 0)
+                    height = int(base_image.get("height", 0) or 0)
+                    if width * height > self.max_image_pixels:
+                        filtered_total += 1
+                        continue
                     image_bytes = base_image["image"]
                     pil_image = Image.open(io.BytesIO(image_bytes))
 
@@ -210,6 +217,10 @@ class PDFParser:
 
             if page_embedded > 0:
                 pages_with_embeds += 1
+
+        if not self.render_vector_figures:
+            print(f"  Extracted {len(images)} embedded figures (vector page rendering disabled)")
+            return images
 
         # 矢量图补充：对嵌入图很少但有大量矢量绘图的页面，渲染并提取图表区域
         for page_num in range(len(doc)):

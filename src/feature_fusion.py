@@ -56,19 +56,20 @@ class FeatureFusion:
         返回：
             融合后的特征向量 (~942维)
         """
-        # 获取各组维度
-        text_embed_dim = self.config['text_features']['embedding_dim']  # 384
-        text_stats_dim = 6   # 统计特征维度
-        image_feat_dim = self.config['image_features']['feature_dim']   # 512
+        # 获取各组维度。语义维度由训练时保存的 LSA 编码器决定，不再硬编码为 384。
+        text_stats_dim = 6
+        text_structural_dim = 18
+        text_embed_dim = max(len(text_features) - text_stats_dim - text_structural_dim, 0)
+        image_feat_dim = int(self.config.get('image_features', {}).get('deep_feature_dim', 0))
         
         # 分拆特征子组
         text_semantic = text_features[:text_embed_dim]      # 384
         text_stats = text_features[text_embed_dim:text_embed_dim + text_stats_dim]  # 6
         # 新增：结构特征（如果存在）
-        text_structural = text_features[text_embed_dim + text_stats_dim:]  # 12 (if available)
+        text_structural = text_features[text_embed_dim + text_stats_dim:]
         
-        image_deep = image_features[:image_feat_dim]         # 512
-        image_stats = image_features[image_feat_dim:]        # 6
+        image_deep = image_features[:image_feat_dim] if image_feat_dim > 0 else np.array([])
+        image_stats = image_features[image_feat_dim:]
         meta_features = self._extract_meta_features(metadata)  # 10
         
         # 各组权重（语义嵌入最重要，结构特征也很重要）
@@ -81,11 +82,11 @@ class FeatureFusion:
         if len(text_structural) > 0:
             groups.append((text_structural, 0.5))  # 结构特征 - 较重要
         
-        groups.extend([
-            (image_deep,   0.8),   # 图像深度特征
-            (image_stats,  0.5),   # 图像统计 - 含画风分析，权重提升
-            (meta_features, 0.3),  # 元数据
-        ])
+        if len(image_deep) > 0:
+            groups.append((image_deep, 0.8))
+        if len(image_stats) > 0:
+            groups.append((image_stats, 0.5))
+        groups.append((meta_features, 0.3))
         
         # L2 归一化每组 + 加权
         normalized_groups = []

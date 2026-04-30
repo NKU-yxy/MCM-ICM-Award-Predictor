@@ -23,13 +23,21 @@ logger = logging.getLogger(__name__)
 # 各年份各题目的关键词（用于内容匹配）
 # 这些关键词来自真实的 MCM/ICM 赛题
 PROBLEM_KEYWORDS_BY_YEAR = {
+    2025: {
+        'A': ['stairs', 'wear pattern', 'stone', 'archaeology', 'renovation', 'constant wear'],
+        'B': ['tourism', 'juneau', 'cruise', 'visitor fee', 'overtourism', 'mendenhall glacier'],
+        'C': ['olympic', 'medal', '2028', 'los angeles', 'home country', 'great coach'],
+        'D': ['baltimore', 'transportation', 'transit', 'mayor', 'roadmap', 'network'],
+        'E': ['land use', 'forest', 'farmland', 'agriculture', 'habitat', 'farmer'],
+        'F': ['cybersecurity', 'national security', 'policy', 'laws', 'cyber', 'national context'],
+    },
     2024: {
         'A': ['lamprey', 'sea lamprey', 'great lakes', 'invasive species', 'population dynamics'],
-        'B': ['momentum', 'tennis', 'match', 'game', 'scoring', 'point'],
+        'B': ['submersible', 'search and rescue', 'ionian sea', 'lost submersible', 'tourist', 'deployment'],
         'C': ['momentum', 'tennis', 'wimbledon', 'match momentum', 'sport'],
-        'D': ['great lakes', 'lake network', 'water', 'shipping', 'navigation'],
-        'E': ['property insurance', 'climate', 'insurance', 'catastrophe', 'risk'],
-        'F': ['equal access', 'education', 'resources', 'equity', 'access'],
+        'D': ['resource availability', 'water-level', 'great lakes', 'water level', 'ecosystem services'],
+        'E': ['property insurance', 'climate', 'insurance', 'extreme weather', 'community'],
+        'F': ['illegal wildlife trade', 'wildlife', 'client', '5-year plan', 'project'],
     },
     2023: {
         'A': ['drought', 'plant', 'communities', 'ecosystem'],

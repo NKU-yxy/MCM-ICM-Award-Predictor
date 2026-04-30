@@ -33,7 +33,7 @@ class OCSVMScorer:
     def __init__(
         self,
         pca_components: int = 50,
-        nu: float = 0.1,
+        nu: float = 0.05,
         gamma: str = "scale",
         kernel: str = "rbf",
     ):
@@ -142,21 +142,21 @@ class OCSVMScorer:
         """
         将 OC-SVM decision_function 原始分数映射到 0-100。
 
-        映射策略:
-          - 训练集 O 奖中位数 → 85 分
-          - 训练集 O 奖 5th 百分位 → 50 分
-          - 高于 95th 百分位 → 接近 100 分
-          - 远低于 O 奖分布 → 趋向 0 分
+        映射策略（不对称指数衰减）:
+          - 训练集 O 奖中位数 (z=0) → 85 分
+          - z = +2σ → 97 分（优秀 O 奖论文）
+          - z = -2σ → 40 分（明显偏离 O 奖）
+          - z = -5σ → 8 分（完全不像 O 奖）
+          - z = -10σ → <1 分（垃圾/无关论文）
 
-        使用稳健的 sigmoid 型映射，避免线性外推的极端值问题。
+        关键改进: 低于中位数时指数衰减到 0，不再卡在 50 分地板。
         """
-        # 以中位数为参考中心
         centered = (raw_scores - self.score_median) / self.score_mad
-
-        # sigmoid 映射: 中心=85, 范围从 p5→50 到 p95→98
-        # 在中心附近近似线性，远处平滑饱和
-        scaled = 85.0 + 35.0 * np.tanh(centered * 0.7)
-
+        scaled = np.where(
+            centered >= 0,
+            85.0 + 15.0 * (1.0 - np.exp(-centered * 0.6)),
+            85.0 * np.exp(centered * 0.35),
+        )
         return np.clip(scaled, 0.0, 100.0)
 
     def get_params(self) -> dict:

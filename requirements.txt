@@ -1,41 +1,16 @@
-# PDF 处理（>=1.24 有预编译 wheel，避免从源码编译）
+# PDF parsing
 PyMuPDF>=1.24.0
 
-# 文本处理和嵌入
-sentence-transformers>=2.3.0
-
-# 机器学习
-xgboost>=2.0.0
+# Lightweight ML / statistics
 scikit-learn>=1.4.0
 scipy>=1.10.0
-imbalanced-learn>=0.12.0
-
-# 深度学习（CPU-only）
-torch>=2.0.0
-torchvision>=0.15.0
-
-# 数据处理
-pandas>=2.0.0
 numpy>=1.24.0
 
-# 图像处理
+# Image statistics
 Pillow>=10.0.0
 
-# 网页爬取
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-
-# 配置文件
+# Config and web service
 PyYAML>=6.0
-
-# 可视化
-matplotlib>=3.8.0
-seaborn>=0.13.0
-
-# 进度条
-tqdm>=4.66.0
-
-# Web 服务
 fastapi>=0.100.0
 uvicorn>=0.20.0
 python-multipart>=0.0.5

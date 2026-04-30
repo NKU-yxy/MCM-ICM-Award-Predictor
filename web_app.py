@@ -318,15 +318,32 @@ async def predict(
         raise HTTPException(status_code=500, detail=f"预测失败: {str(e)}")
 
     # ---- 8. 记录统计 ----
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "棰勬祴澶辫触"))
+
+    if result.get("is_mcm") is False:
+        return JSONResponse({
+            "success": True,
+            "is_mcm": False,
+            "message": result.get("message", "非美赛PDF，不予评奖"),
+            "rejection_reason": result.get("rejection_reason", "非美赛PDF，不予评奖"),
+            "mcm_relevance": round(float(result.get("mcm_relevance", 0.0)), 3),
+            "probabilities": {"O": 0, "F": 0, "M": 0, "H": 0, "S": 0},
+            "metadata": {
+                "abstract_length": result.get("metadata", {}).get("abstract_length", 0),
+                "image_count": result.get("metadata", {}).get("image_count", 0),
+                "page_count": result.get("metadata", {}).get("page_count", 0),
+                "ref_count": result.get("metadata", {}).get("ref_count", 0),
+            },
+        })
+
     best_award = max(result["probabilities"], key=result["probabilities"].get) if result.get("probabilities") else "S"
     record_prediction(float(result.get("score", 0)), result.get("problem", "?"), best_award)
 
     # ---- 9. 返回结果 ----
-    if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error", "预测失败"))
-
     return JSONResponse({
         "success": True,
+        "is_mcm": True,
         "score": round(result["score"], 1),
         "probabilities": {
             k: round(v * 100, 1) for k, v in result["probabilities"].items()
@@ -340,6 +357,7 @@ async def predict(
         "quality_tier": result["quality_tier"],
         "emoji": result["emoji"],
         "description": result["description"],
+        "mcm_relevance": round(float(result.get("mcm_relevance", 1.0)), 3),
         "metadata": {
             "abstract_length": result["metadata"]["abstract_length"],
             "image_count": result["metadata"]["image_count"],
