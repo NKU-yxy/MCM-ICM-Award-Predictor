@@ -50,8 +50,8 @@ class TextFeatureExtractor:
         {
             'semantic_features': np.ndarray,  # 语义向量 (384维)
             'statistical_features': np.ndarray,  # 统计特征 (6维)
-            'structural_features': np.ndarray,  # 结构特征 (12维) - 新增
-            'feature_vector': np.ndarray  # 完整特征向量 (402维)
+            'structural_features': np.ndarray,  # 结构+质量特征 (18维)
+            'feature_vector': np.ndarray  # 完整特征向量 (408维)
         }
         """
         # 截断过长文本
@@ -140,78 +140,165 @@ class TextFeatureExtractor:
     
     def _extract_structural_features(self, abstract: str, full_text: str, structure: dict) -> np.ndarray:
         """
-        提取结构特征（基于全文和论文结构分析）
-        
-        特征列表（12维）：
+        提取结构特征（基于全文和论文结构分析，18维）
+
+        特征列表（18维）：
         1. readability_score - 可读性分数（学术性指标）
         2. vocabulary_diversity - 词汇多样性
         3. academic_phrase_density - 学术短语密度
         4. structure_completeness - 结构完整度 (0-1)
-        5. formula_density - 公式密度（公式数/总词数*1000）
-        6. table_count_norm - 表格数量（归一化）
-        7. figure_count_norm - 图表标题数量（归一化）
-        8. citation_density - 引用密度（引用数/总词数*1000）
-        9. total_word_count_norm - 总字数（归一化）
-        10. advanced_section_score - 高级节评分（归一化）
-        11. avg_paragraph_length_norm - 平均段落长度（归一化）
-        12. section_count_norm - 检测到的标准节数（归一化）
+        5. formula_quality - 公式密度质量分（最优区间评分，非单调递增）
+        6. table_quality - 表格数量质量分（最优区间评分）
+        7. figure_quality - 图表数量质量分（最优区间评分）
+        8. citation_quality - 引用密度质量分（最优区间评分）
+        9. word_count_quality - 总字数质量分（最优区间评分）
+        10. advanced_quality_score - 高级+质量内容综合评分
+        11. paragraph_quality - 段落长度质量分（最优区间评分）
+        12. section_count_norm - 标准节数（归一化）
+        --- 新增质量信号 ---
+        13. has_assumption_justification - 是否有假设合理性论证
+        14. has_model_comparison - 是否有模型对比
+        15. has_error_analysis - 是否有误差/不确定性分析
+        16. has_dimensional_analysis - 是否有量纲/归一化讨论
+        17. logical_coherence_score - 段落间语义连贯性
+        18. paragraph_variety_score - 段落长度多样性（结构丰富度）
         """
         features = []
-        
+
         # 1. 可读性分数（基于摘要，衡量学术写作水平）
         readability = calculate_readability_score(abstract)
         features.append(readability)
-        
+
         # 2. 词汇多样性（基于全文前5000词）
         text_sample = ' '.join(full_text.split()[:5000])
         vocab_diversity = calculate_vocabulary_diversity(text_sample)
         features.append(vocab_diversity)
-        
+
         # 3. 学术短语密度（基于全文）
         academic_density = count_academic_phrases(full_text)
         features.append(academic_density)
-        
+
         # 以下特征基于结构分析结果
         total_words = max(structure.get('total_word_count', len(full_text.split())), 1)
-        
+
         # 4. 结构完整度
         features.append(structure.get('structure_completeness', 0.5))
-        
-        # 5. 公式密度（每千字公式数，归一化到 0-1）
+
+        # 5. 公式密度质量分（最优区间：每千字 10-25 个公式）
         formula_count = structure.get('formula_count', 0)
-        formula_density = min(formula_count / total_words * 1000 / 20.0, 1.0)
-        features.append(formula_density)
-        
-        # 6. 表格数量（归一化，假设最多 20 个）
+        formula_per_k = formula_count / total_words * 1000
+        formula_quality = self._gaussian_optimal(formula_per_k, optimal=18, spread=12)
+        features.append(formula_quality)
+
+        # 6. 表格数量质量分（最优区间：4-10 个表格）
         table_count = structure.get('table_count', 0)
-        features.append(min(table_count / 20.0, 1.0))
-        
-        # 7. 图表标题数量（归一化，假设最多 30 个）
+        table_quality = self._gaussian_optimal(table_count, optimal=6, spread=5)
+        features.append(table_quality)
+
+        # 7. 图表数量质量分（最优区间：10-25 个图表）
         figure_count = structure.get('figure_caption_count', 0)
-        features.append(min(figure_count / 30.0, 1.0))
-        
-        # 8. 引用密度（每千字引用数，归一化到 0-1）
+        figure_quality = self._gaussian_optimal(figure_count, optimal=15, spread=10)
+        features.append(figure_quality)
+
+        # 8. 引用密度质量分（最优区间：每千字 8-20 处引用）
         citation_count = structure.get('citation_count', 0)
-        citation_density = min(citation_count / total_words * 1000 / 15.0, 1.0)
-        features.append(citation_density)
-        
-        # 9. 总字数（归一化，假设范围 1000-15000）
-        word_count_norm = min(max((total_words - 1000) / 14000.0, 0.0), 1.0)
-        features.append(word_count_norm)
-        
-        # 10. 高级节评分（最多4个高级节）
+        citation_per_k = citation_count / total_words * 1000
+        citation_quality = self._gaussian_optimal(citation_per_k, optimal=12, spread=8)
+        features.append(citation_quality)
+
+        # 9. 总字数量分（最优区间：8000-16000 词）
+        word_quality = self._gaussian_optimal(total_words, optimal=12000, spread=5000)
+        features.append(word_quality)
+
+        # 10. 高级+质量内容综合评分
         advanced_count = structure.get('advanced_section_count', 0)
-        features.append(min(advanced_count / 4.0, 1.0))
-        
-        # 11. 平均段落长度（归一化，假设范围 0-200 词）
+        quality_count = structure.get('quality_section_count', 0)
+        advanced_quality_score = min((advanced_count * 0.7 + quality_count * 1.0) / 6.0, 1.0)
+        features.append(advanced_quality_score)
+
+        # 11. 段落长度质量分（最优区间：80-160 词/段）
         avg_para_len = structure.get('avg_paragraph_length', 0)
-        features.append(min(avg_para_len / 200.0, 1.0))
-        
+        para_quality = self._gaussian_optimal(avg_para_len, optimal=120, spread=60)
+        features.append(para_quality)
+
         # 12. 检测到的标准节数（归一化，最多 6 个核心节）
         section_count = structure.get('section_count', 0)
         features.append(min(section_count / 6.0, 1.0))
-        
+
+        # --- 新增质量信号（13-18） ---
+        # 13. 假设合理性论证
+        features.append(1.0 if structure.get('has_assumption_justification', False) else 0.0)
+
+        # 14. 模型对比
+        features.append(1.0 if structure.get('has_model_comparison', False) else 0.0)
+
+        # 15. 误差/不确定性分析
+        features.append(1.0 if structure.get('has_error_analysis', False) else 0.0)
+
+        # 16. 量纲/归一化讨论
+        features.append(1.0 if structure.get('has_dimensional_analysis', False) else 0.0)
+
+        # 17. 逻辑连贯性（段落间语义相似度的均值和方差）
+        coherence = self._compute_coherence(full_text)
+        features.append(coherence)
+
+        # 18. 段落长度多样性（标准差/均值，高值=结构丰富）
+        paragraphs_text = [p.strip() for p in full_text.split('\n\n') if p.strip() and len(p.strip()) > 30]
+        if len(paragraphs_text) > 3:
+            para_lens = [len(p.split()) for p in paragraphs_text]
+            para_mean = np.mean(para_lens)
+            para_std = np.std(para_lens)
+            variety = min(para_std / max(para_mean, 1), 1.0)
+        else:
+            variety = 0.0
+        features.append(variety)
+
         return np.array(features, dtype=np.float32)
+
+    @staticmethod
+    def _gaussian_optimal(value: float, optimal: float, spread: float) -> float:
+        """
+        高斯最优区间评分：值越接近 optimal 得分越高，偏离任一侧都降分。
+        解决了原先「越多越好」的单调归一化问题。
+        """
+        z = (value - optimal) / max(spread, 1.0)
+        return float(np.exp(-0.5 * z * z))
+
+    def _compute_coherence(self, full_text: str) -> float:
+        """
+        计算段落间语义连贯性。
+
+        对相邻段落用 sentence-transformer 提取嵌入，计算 cosine similarity。
+        连贯的论文相邻段落语义相似度高且稳定。
+        """
+        try:
+            paragraphs = [p.strip() for p in full_text.split('\n\n')
+                          if p.strip() and len(p.strip()) > 100]
+            if len(paragraphs) < 3:
+                return 0.5
+
+            # 取前 8 段，控制计算量
+            sample_paras = paragraphs[:8]
+            embeddings = self.model.encode(sample_paras, convert_to_numpy=True)
+
+            similarities = []
+            for i in range(len(embeddings) - 1):
+                sim = float(np.dot(embeddings[i], embeddings[i + 1]) / (
+                    max(np.linalg.norm(embeddings[i]), 1e-8) *
+                    max(np.linalg.norm(embeddings[i + 1]), 1e-8)
+                ))
+                similarities.append(sim)
+
+            if not similarities:
+                return 0.5
+
+            avg_sim = np.mean(similarities)
+            # 连贯性 = 高平均相似度 + 低方差（稳定过渡）
+            std_sim = np.std(similarities) if len(similarities) > 1 else 0.0
+            coherence = avg_sim * (1.0 - std_sim)
+            return float(np.clip(coherence, 0.0, 1.0))
+        except Exception:
+            return 0.5
     
     def batch_extract(self, abstracts: List[str]) -> np.ndarray:
         """
@@ -254,14 +341,21 @@ class TextFeatureExtractor:
             "vocabulary_diversity",
             "academic_phrase_density",
             "structure_completeness",
-            "formula_density",
-            "table_count_norm",
-            "figure_count_norm",
-            "citation_density",
-            "total_word_count_norm",
-            "advanced_section_score",
-            "avg_paragraph_length_norm",
-            "section_count_norm"
+            "formula_quality",
+            "table_quality",
+            "figure_quality",
+            "citation_quality",
+            "word_count_quality",
+            "advanced_quality_score",
+            "paragraph_quality",
+            "section_count_norm",
+            # 新增质量信号
+            "has_assumption_justification",
+            "has_model_comparison",
+            "has_error_analysis",
+            "has_dimensional_analysis",
+            "logical_coherence_score",
+            "paragraph_variety_score",
         ]
         
         return semantic_names + statistical_names + structural_names

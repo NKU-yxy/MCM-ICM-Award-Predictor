@@ -33,6 +33,7 @@ from src.feature_fusion import fuse_features
 from src.probability_model_v2 import EnhancedAwardEstimator
 from src.problem_detector import ProblemDetector, detect_problem
 from src.award_prior import get_award_prior, get_problem_profile, list_available_data
+from src.ocsvm_scorer import OCSVMScorer
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -74,6 +75,15 @@ class AwardPredictor:
         self.image_extractor = ImageFeatureExtractor()
         self.problem_detector = ProblemDetector()
         
+        # 初始化 OC-SVM 打分器（如有）
+        ocsvm_params = self.model_data.get('ocsvm_scorer')
+        if ocsvm_params:
+            self.ocsvm_scorer = OCSVMScorer()
+            self.ocsvm_scorer.load_params(ocsvm_params)
+            logger.info("  ✓ OC-SVM 打分器已加载")
+        else:
+            self.ocsvm_scorer = None
+
         # 初始化概率估计器
         prob_params = self.model_data.get('prob_model_params')
         if prob_params and 'award_distributions' in prob_params:
@@ -82,7 +92,6 @@ class AwardPredictor:
         else:
             # 使用训练集的相似度重新拟合
             stats = self.model_data['stats']
-            # 从stats中模拟O奖相似度分布
             sim_mean = stats['similarity_mean']
             sim_std = stats['similarity_std']
             fake_sims = np.random.normal(sim_mean, sim_std, 50)
@@ -211,17 +220,23 @@ class AwardPredictor:
                 ref_count=ref_count,
             )
             
-            # 计算与 O 奖质心的余弦相似度
+            # 计算质量分数: 优先使用 OC-SVM，回退到余弦相似度
             centroid = self.model_data['centroid']
             stats = self.model_data['stats']
-            
-            fused, centroid = self._align_dimensions(fused, centroid)
-            
-            similarity = cosine_similarity(
-                fused.reshape(1, -1), centroid.reshape(1, -1)
-            )[0, 0]
-            
-            score = self._compute_score(similarity, stats)
+
+            if self.ocsvm_scorer is not None and self.ocsvm_scorer.fitted:
+                score = self.ocsvm_scorer.score(fused)
+                # 仍计算余弦相似度用于贝叶斯路径和展示
+                fused_aligned, centroid_aligned = self._align_dimensions(fused, centroid)
+                similarity = cosine_similarity(
+                    fused_aligned.reshape(1, -1), centroid_aligned.reshape(1, -1)
+                )[0, 0]
+            else:
+                fused, centroid = self._align_dimensions(fused, centroid)
+                similarity = cosine_similarity(
+                    fused.reshape(1, -1), centroid.reshape(1, -1)
+                )[0, 0]
+                score = self._compute_score(similarity, stats)
             
             # ==================== 步骤5: 三维度子分 ====================
             if verbose:
@@ -491,6 +506,18 @@ class AwardPredictor:
         if adv_count < o_avg_adv * 0.5:
             mod_diff.append(f"高级建模内容偏少 ({adv_count}节 vs O奖平均{o_avg_adv:.0f}节)")
 
+        # 新增质量信号反馈
+        if not structure.get('has_assumption_justification'):
+            mod_diff.append("缺少假设合理性论证，O奖论文通常解释假设为何合理")
+            mod_score *= 0.93
+        if not structure.get('has_model_comparison'):
+            mod_diff.append("缺少模型对比/基准比较，建议添加 alternative model 讨论")
+        if not structure.get('has_error_analysis'):
+            mod_diff.append("缺少误差/不确定性分析，建议加入 confidence interval 或 RMSE 讨论")
+            mod_score *= 0.94
+        if structure.get('has_dimensional_analysis'):
+            mod_diff.append("包含量纲/归一化分析 ✓")
+
         if page_count < o_avg_pages * 0.6:
             mod_diff.append(f"论文页数偏少 ({page_count}页 vs O奖平均{o_avg_pages:.0f}页)")
 
@@ -657,11 +684,26 @@ class AwardPredictor:
             advanced.append('优缺点分析')
         if structure.get('has_future_work'):
             advanced.append('未来工作')
-        
+
+        quality_items = []
+        if structure.get('has_assumption_justification'):
+            quality_items.append('假设论证')
+        if structure.get('has_model_comparison'):
+            quality_items.append('模型对比')
+        if structure.get('has_error_analysis'):
+            quality_items.append('误差分析')
+        if structure.get('has_dimensional_analysis'):
+            quality_items.append('量纲分析')
+
         if advanced:
             logger.info(f"     ⭐ 高级内容: {', '.join(advanced)}")
         else:
             logger.info(f"     ⚠️ 建议添加: 灵敏度分析, 模型验证, 优缺点分析")
+
+        if quality_items:
+            logger.info(f"     🎯 深度质量: {', '.join(quality_items)}")
+        else:
+            logger.info(f"     ⚠️ 建议加强: 假设合理性论证, 模型对比, 误差分析")
         
         logger.info(f"\n{'='*64}")
     

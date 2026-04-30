@@ -4,11 +4,35 @@
 # Data directory (contains PDFs and processed data)
 data/
 
+# Trained model binaries (too large, regenerate with training script)
+models/*.json
+
 # Claude internal
 .claude/
 
-# Python
+# Python bytecode & cache
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Virtual environment
 .venv/
+venv/
+env/
+
+# IDE & editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Temp / scratch files
+*.tmp
+*.temp
+带实现计划.txt

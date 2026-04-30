@@ -28,6 +28,8 @@ from src.image_features import ImageFeatureExtractor
 from src.feature_fusion import fuse_features
 from src.utils import load_config, ensure_dir
 from src.probability_model_v2 import EnhancedAwardEstimator as AwardProbabilityEstimator
+from src.ocsvm_scorer import OCSVMScorer
+from src.ordinal_calibrator import OrdinalCalibrator
 
 # 设置日志
 logging.basicConfig(
@@ -241,9 +243,9 @@ def compute_statistics(features: np.ndarray, centroid: np.ndarray, metadata: Lis
     return stats
 
 
-def save_model(centroid: np.ndarray, stats: Dict, metadata: List[Dict], 
+def save_model(centroid: np.ndarray, stats: Dict, metadata: List[Dict],
                save_path: str, prob_model_params: Dict = None,
-               aspect_stats: Dict = None):
+               aspect_stats: Dict = None, ocsvm_scorer: OCSVMScorer = None):
     """
     保存模型
     """
@@ -258,8 +260,12 @@ def save_model(centroid: np.ndarray, stats: Dict, metadata: List[Dict],
         'train_date': datetime.now().isoformat(),
         'n_papers': len(metadata),
         'prob_model_params': prob_model_params,
-        'aspect_stats': aspect_stats,       # 三维度子分统计
+        'aspect_stats': aspect_stats,
     }
+
+    # OC-SVM 打分器
+    if ocsvm_scorer is not None and ocsvm_scorer.fitted:
+        model_data['ocsvm_scorer'] = ocsvm_scorer.get_params()
     
     ensure_dir(os.path.dirname(save_path))
     
@@ -536,6 +542,36 @@ def main():
         logger.info(f"    Problem A: {probs_a_str}")
         logger.info(f"    Problem C: {probs_c_str}")
     
+    # ========== 步骤5.6: 训练 OC-SVM 打分器 ==========
+    logger.info("\n步骤5.6: 训练 OC-SVM 质量打分器...")
+    ocsvm_scorer = OCSVMScorer(
+        pca_components=config.get('ocsvm', {}).get('pca_components', 50),
+        nu=config.get('ocsvm', {}).get('nu', 0.1),
+        gamma=config.get('ocsvm', {}).get('gamma', 'scale'),
+        kernel=config.get('ocsvm', {}).get('kernel', 'rbf'),
+    )
+    train_ocsvm_scores = ocsvm_scorer.fit(train_features)
+    logger.info(f"  OC-SVM 训练集分数: mean={train_ocsvm_scores.mean():.1f}, "
+                f"std={train_ocsvm_scores.std():.1f}, "
+                f"min={train_ocsvm_scores.min():.1f}, max={train_ocsvm_scores.max():.1f}")
+
+    # ========== 步骤5.7: 拟合序数阈值标定器 ==========
+    logger.info("\n步骤5.7: 拟合序数阈值标定器 (替代手工高斯峰值)...")
+    ordinal_calibrator = OrdinalCalibrator(
+        temperature=config.get('ordinal', {}).get('temperature', 2.0),
+    )
+    ordinal_calibrator.fit(train_ocsvm_scores)
+    logger.info(f"  序数阈值: O/F={ordinal_calibrator.thresholds[0]:.1f}, "
+                f"F/M={ordinal_calibrator.thresholds[1]:.1f}, "
+                f"M/H={ordinal_calibrator.thresholds[2]:.1f}, "
+                f"H/S={ordinal_calibrator.thresholds[3]:.1f}")
+
+    # 用序数标定器更新概率估计器
+    ensemble_w = config.get('ordinal', {}).get('ensemble_weight_score', 0.45)
+    prob_estimator.ordinal_calibrator = ordinal_calibrator
+    prob_estimator.ensemble_weight_score = ensemble_w
+    prob_model_params = prob_estimator.get_parameters()
+
     # ========== 步骤6: 验证集评估 ==========
     logger.info("\n步骤6: 验证集评估...")
     val_scores = evaluate_validation_set(val_features, centroid, stats, val_metadata)
@@ -559,7 +595,7 @@ def main():
     # ========== 步骤7: 保存模型 ==========
     logger.info("\n步骤7: 保存模型...")
     model_path = "models/scoring_model.pkl"
-    save_model(centroid, stats, train_metadata, model_path, prob_model_params, aspect_stats)
+    save_model(centroid, stats, train_metadata, model_path, prob_model_params, aspect_stats, ocsvm_scorer)
     
     logger.info("\n" + "=" * 60)
     logger.info("训练完成！")

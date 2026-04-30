@@ -89,3 +89,15 @@ probability_model:
   
   # 是否自动检测题目类型
   auto_detect_problem: true
+
+# OC-SVM 质量打分器配置
+ocsvm:
+  pca_components: 50       # PCA 降维目标维度（0 则自动: min(50, n_samples//3, n_features)）
+  nu: 0.1                  # OC-SVM nu 参数（允许 ~10% 的 O 奖论文在边界外）
+  gamma: "scale"           # RBF 核 gamma（"scale"=1/(n_features*var), "auto"=1/n_features）
+  kernel: "rbf"            # 核函数类型
+
+# 序数阈值标定器配置
+ordinal:
+  temperature: 2.0         # probit 边界软硬程度（越小越接近硬阈值）
+  ensemble_weight_score: 0.45  # 分数路径在最终概率中的权重（剩余给贝叶斯路径）

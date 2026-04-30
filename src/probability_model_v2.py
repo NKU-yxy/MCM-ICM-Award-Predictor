@@ -30,12 +30,13 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.award_prior import (
-    get_award_prior, 
-    get_problem_profile, 
+    get_award_prior,
+    get_problem_profile,
     get_competition_intensity,
     get_problem_difficulty_adjustment,
     PROBLEM_TYPE_PROFILES,
 )
+from src.ordinal_calibrator import OrdinalCalibrator
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +52,28 @@ class EnhancedAwardEstimator:
     4. 更精细的贝叶斯推断
     """
     
-    def __init__(self, o_similarities: np.ndarray = None, stats: dict = None):
+    def __init__(
+        self,
+        o_similarities: np.ndarray = None,
+        stats: dict = None,
+        ordinal_calibrator: OrdinalCalibrator = None,
+        ensemble_weight_score: float = 0.45,
+    ):
         """
         初始化估计器
-        
+
         参数:
             o_similarities: O奖论文的余弦相似度数组
             stats: 训练时的统计信息
+            ordinal_calibrator: 序数阈值标定器（替代手工高斯峰值）
+            ensemble_weight_score: 分数路径在融合中的权重 (0-1)
         """
         self.stats = stats or {}
         self.o_similarities = o_similarities
         self.award_distributions = {}
-        
+        self.ordinal_calibrator = ordinal_calibrator
+        self.ensemble_weight_score = ensemble_weight_score
+
         if o_similarities is not None and len(o_similarities) > 3:
             self._fit_distributions(o_similarities)
     
@@ -160,19 +171,20 @@ class EnhancedAwardEstimator:
         if not self.award_distributions and score is None:
             return self._default_probabilities(problem, year)
         
-        # ========== 第1步: 基于分数的概率映射（主导） ==========
-        score_probs = self._score_based_probabilities(score, aspect_scores)
-        
+        # ========== 第1步: 基于分数的概率映射 ==========
+        if self.ordinal_calibrator is not None and self.ordinal_calibrator.fitted:
+            score_probs = self._ordinal_probabilities(score, aspect_scores)
+        else:
+            score_probs = self._score_based_probabilities(score, aspect_scores)
+
         # ========== 第2步: 贝叶斯概率（软化先验，辅助） ==========
         bayesian_probs = self._bayesian_with_soft_priors(
             similarity, problem, year, structure_info, full_text
         )
-        
+
         # ========== 第3步: 加权融合 ==========
-        # 提升贝叶斯权重以利用 COMAP 真实获奖比例做校准
-        # 避免分数信号过度主导导致预测偏高
-        w_score = 0.45
-        w_bayes = 0.55
+        w_score = self.ensemble_weight_score
+        w_bayes = 1.0 - w_score
         
         posteriors = {}
         for award in ['O', 'F', 'M', 'H', 'S']:
@@ -249,7 +261,29 @@ class EnhancedAwardEstimator:
         total = sum(exp_logits.values())
         
         return {k: v / total for k, v in exp_logits.items()}
-    
+
+    def _ordinal_probabilities(
+        self, score: float, aspect_scores: dict = None,
+    ) -> Dict[str, float]:
+        """
+        使用序数 probit 标定器将分数映射到奖项概率。
+
+        如果标定器不可用，回退到手工高斯混合。
+        """
+        if self.ordinal_calibrator is None or not self.ordinal_calibrator.fitted:
+            return self._score_based_probabilities(score, aspect_scores)
+
+        # 综合质量分（融合总分与三维度子分，同 _score_based_probabilities）
+        if aspect_scores:
+            vals = [aspect_scores.get(k, score)
+                    for k in ['abstract', 'figures', 'modeling']]
+            avg_aspect = float(np.mean(vals))
+            quality = 0.55 * score + 0.45 * avg_aspect
+        else:
+            quality = score
+
+        return self.ordinal_calibrator.predict_proba(quality)
+
     def _bayesian_with_soft_priors(
         self, similarity: float, problem: str, year: int,
         structure_info: dict = None, full_text: str = None,
@@ -316,73 +350,89 @@ class EnhancedAwardEstimator:
             likelihoods[award] = max(likelihood, 1e-30)
         return likelihoods
     
+    @staticmethod
+    def _gaussian_optimal(value, optimal, spread):
+        """高斯最优区间评分：越接近 optimal 越高，偏离任一方向都降分"""
+        z = (value - optimal) / max(spread, 1.0)
+        return float(np.exp(-0.5 * z * z))
+
     def _adjust_by_structure(self, posteriors: Dict[str, float],
                               structure_info: dict, problem: str) -> Dict[str, float]:
         """
-        根据论文结构质量调整概率
-        
-        结构信号包括:
-        - 结构完整度 (有摘要/引言/方法/结果/结论/参考文献)
-        - 公式密度
-        - 图表数量
-        - 引用密度
-        - 是否有灵敏度分析/模型验证等高级内容
-        
-        这些信号对不同题目有不同的权重
+        根据论文结构质量调整概率。
+
+        改进点（v3）：
+        - 计数类特征改为最优区间评分（非「越多越好」）
+        - 新增质量信号权重更高（假设论证/模型对比/误差分析）
+        - 纯计数信号权重降低
         """
         profile = get_problem_profile(problem)
         indicators = profile.get('key_indicators', {})
-        
-        # 计算结构质量综合评分 (0-1)
+        total_words = max(structure_info.get('total_word_count', 10000), 1)
+
         quality_signals = []
-        
-        # 1. 结构完整度
+
+        # 1. 结构完整度（权重 1.5）
         completeness = structure_info.get('structure_completeness', 0.5)
-        quality_signals.append(completeness * 1.5)  # 权重最高
-        
-        # 2. 公式密度（根据题目类型加权）
-        formula_density = structure_info.get('formula_count', 0) / max(structure_info.get('total_word_count', 1), 1) * 1000
-        formula_score = min(formula_density / 15.0, 1.0) * indicators.get('formula_weight', 1.0)
+        quality_signals.append(completeness * 1.5)
+
+        # 2. 公式密度 —— 最优区间评分（非单调）
+        formula_count = structure_info.get('formula_count', 0)
+        formula_per_k = formula_count / total_words * 1000
+        formula_score = self._gaussian_optimal(formula_per_k, 18, 12)
+        formula_score *= indicators.get('formula_weight', 1.0)
         quality_signals.append(formula_score)
-        
-        # 3. 图表丰富度
+
+        # 3. 图表丰富度 —— 最优区间评分
         figure_count = structure_info.get('figure_caption_count', 0)
         table_count = structure_info.get('table_count', 0)
-        visual_score = min((figure_count + table_count) / 15.0, 1.0) * indicators.get('figure_weight', 1.0)
+        visual_total = figure_count + table_count
+        visual_score = self._gaussian_optimal(visual_total, 20, 12)
+        visual_score *= indicators.get('figure_weight', 1.0)
         quality_signals.append(visual_score)
-        
-        # 4. 灵敏度分析（非常重要的O奖指标）
+
+        # 4. 引用密度 —— 最优区间评分
+        citation_count = structure_info.get('citation_count', 0)
+        citation_per_k = citation_count / total_words * 1000
+        citation_score = self._gaussian_optimal(citation_per_k, 12, 8)
+        quality_signals.append(citation_score * 0.6)
+
+        # 5. 高级内容信号（灵敏度/模型验证/优缺点）
         has_sensitivity = structure_info.get('has_sensitivity_analysis', False)
         has_validation = structure_info.get('has_model_validation', False)
         has_sw = structure_info.get('has_strengths_weaknesses', False)
         advanced_score = (int(has_sensitivity) + int(has_validation) + int(has_sw)) / 3.0
         advanced_score *= indicators.get('sensitivity_weight', 1.0)
-        quality_signals.append(advanced_score * 1.2)  # 高级内容加权
-        
-        # 5. 引用密度
-        citation_count = structure_info.get('citation_count', 0)
-        citation_score = min(citation_count / 50.0, 1.0)
-        quality_signals.append(citation_score * 0.8)
-        
-        # 综合结构质量分 (0-1)
-        weights = [1.5, 1.0, 1.0, 1.2, 0.8]
+        quality_signals.append(advanced_score * 1.2)
+
+        # 6. 新增质量信号（权重最高 —— 这些是 O 奖论文的核心标识）
+        has_justification = structure_info.get('has_assumption_justification', False)
+        has_comparison = structure_info.get('has_model_comparison', False)
+        has_error = structure_info.get('has_error_analysis', False)
+        has_dimensional = structure_info.get('has_dimensional_analysis', False)
+        quality_count = (
+            int(has_justification) + int(has_comparison) +
+            int(has_error) + int(has_dimensional)
+        )
+        quality_score = quality_count / 4.0
+        quality_signals.append(quality_score * 2.0)  # 最高权重
+
+        # 综合结构质量分
+        weights = [1.5, 1.0, 1.0, 0.6, 1.2, 2.0]
         structure_quality = sum(s * w for s, w in zip(quality_signals, weights)) / sum(weights)
         structure_quality = np.clip(structure_quality, 0, 1)
-        
+
         # 用结构质量调整概率
-        # 高质量 → 提升 O/F/M, 降低 H/S
-        # 低质量 → 降低 O/F/M, 提升 H/S
-        adjustment_strength = 0.25  # 调整强度
+        adjustment_strength = 0.28
         bias = (structure_quality - 0.5) * adjustment_strength
-        
+
         award_order = {'O': 2.0, 'F': 1.5, 'M': 0.5, 'H': -0.5, 'S': -1.5}
-        
+
         adjusted = {}
         for award, prob in posteriors.items():
             factor = 1.0 + bias * award_order.get(award, 0)
             adjusted[award] = max(prob * factor, 1e-8)
-        
-        # 归一化
+
         total = sum(adjusted.values())
         return {k: v / total for k, v in adjusted.items()}
     
@@ -464,14 +514,23 @@ class EnhancedAwardEstimator:
     
     def get_parameters(self) -> dict:
         """获取模型参数（用于保存）"""
-        return {
+        params = {
             'award_distributions': self.award_distributions,
-            'version': 'v2_enhanced',
+            'version': 'v3_ordinal',
+            'ensemble_weight_score': self.ensemble_weight_score,
         }
-    
+        if self.ordinal_calibrator is not None:
+            params['ordinal_calibrator'] = self.ordinal_calibrator.get_params()
+        return params
+
     def load_parameters(self, params: dict):
         """加载模型参数"""
         self.award_distributions = params.get('award_distributions', {})
+        self.ensemble_weight_score = params.get('ensemble_weight_score', 0.45)
+        cal_params = params.get('ordinal_calibrator')
+        if cal_params:
+            self.ordinal_calibrator = OrdinalCalibrator()
+            self.ordinal_calibrator.load_params(cal_params)
     
     @staticmethod
     def get_award_description(probs: Dict[str, float]) -> str:
