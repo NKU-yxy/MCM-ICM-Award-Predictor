@@ -322,7 +322,8 @@ class PredictorGUI:
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.root.after(0, lambda: self._err(str(e)))
+            msg = str(e)
+            self.root.after(0, lambda: self._err(msg))
 
     def _tsts(self, t, c=TEXT_SEC):
         self.root.after(0, lambda: self._sts(t, c))
