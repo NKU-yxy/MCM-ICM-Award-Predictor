@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCM/ICM Award Predictor — 美赛论文获奖预测</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ==========================================================================
+   Biblioteca — Warm Academic Light Theme
+   ========================================================================== */
+:root {
+  --bg-page:        #faf7f2;
+  --bg-card:        #fffdf9;
+  --bg-surface:     #f5f0e8;
+  --bg-input:       #faf7f2;
+  --border-subtle:  #e5dcd0;
+  --border-medium:  #d4c8b4;
+  --text-primary:   #2c2416;
+  --text-secondary: #6b5e4a;
+  --text-muted:     #9b8d78;
+  --accent:         #c17752;
+  --accent-hover:   #d4916e;
+  --accent-dim:     rgba(193,119,82,.12);
+  --gold:           #b8860b;
+  --gold-light:     #d4a535;
+  --sage:           #5a8a6a;
+  --sage-dim:       rgba(90,138,106,.12);
+  --error:          #c0504a;
+  --error-dim:      rgba(192,80,74,.1);
+  --award-o:        #b8860b;
+  --award-o-bg:     rgba(184,134,11,.15);
+  --award-f:        #8a8a8a;
+  --award-f-bg:     rgba(138,138,138,.12);
+  --award-m:        #a0643a;
+  --award-m-bg:     rgba(160,100,58,.12);
+  --award-h:        #7a8a5a;
+  --award-h-bg:     rgba(122,138,90,.12);
+  --award-s:        #9b8d78;
+  --award-s-bg:     rgba(155,141,120,.1);
+  --radius-sm: 5px;
+  --radius-md: 9px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 3px rgba(44,36,22,.06);
+  --shadow-md: 0 3px 12px rgba(44,36,22,.08);
+  --shadow-lg: 0 6px 28px rgba(44,36,22,.10);
+  --transition-fast: 140ms ease;
+  --transition-normal: 260ms ease;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  font-family: 'DM Sans', -apple-system, sans-serif;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+/* Subtle paper fiber texture */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(180,160,130,.015) 2px, rgba(180,160,130,.015) 4px);
+  pointer-events: none; z-index: 0;
+}
+
+.app-container { position: relative; z-index: 1; max-width: 920px; margin: 0 auto; padding: 44px 24px 64px; }
+
+/* ---- Header ---- */
+.header { text-align: center; margin-bottom: 40px; }
+.header h1 {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(1.7rem, 3.8vw, 2.5rem);
+  font-weight: 700; letter-spacing: -0.01em;
+  color: var(--text-primary); line-height: 1.3;
+}
+.header h1 .accent { color: var(--accent); }
+.header .subtitle { margin-top: 6px; color: var(--text-secondary); font-size: .92rem; }
+
+/* ---- Stats Banner ---- */
+.stats-banner {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 32px;
+  animation: fadeUp .5s ease;
+}
+.stat-tile {
+  flex: 1; min-width: 130px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+}
+.stat-tile .stat-num {
+  font-family: 'DM Mono', monospace;
+  font-size: 1.6rem; font-weight: 500;
+  color: var(--accent);
+}
+.stat-tile .stat-label { font-size: .78rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ---- Upload Zone ---- */
+.upload-zone {
+  position: relative;
+  border: 2px dashed var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: 48px 28px;
+  text-align: center; cursor: pointer;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition-normal), box-shadow var(--transition-normal), background var(--transition-normal);
+}
+.upload-zone:hover, .upload-zone.drag-over {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md);
+  background: #fefaf6;
+}
+.upload-zone.drag-over { border-style: solid; }
+.upload-zone.has-file { border-color: var(--sage); border-style: solid; }
+.upload-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--bg-surface);
+  font-size: 1.5rem; margin-bottom: 14px;
+}
+.upload-zone h3 { font-family: 'Playfair Display', serif; font-size: 1.1rem; }
+.upload-zone .muted { color: var(--text-muted); font-size: .82rem; margin-top: 4px; }
+.upload-zone input[type=file] { display: none; }
+
+.file-info {
+  display: none; margin-top: 12px; padding: 10px 16px;
+  background: var(--sage-dim); border-radius: var(--radius-sm);
+  font-size: .85rem; align-items: center; gap: 8px;
+}
+.file-info.show { display: flex; }
+.file-info .remove { cursor: pointer; color: var(--error); font-size: .85rem; opacity: .7; }
+.file-info .remove:hover { opacity: 1; }
+
+/* ---- Controls ---- */
+.controls {
+  display: flex; gap: 12px; flex-wrap: wrap; margin: 18px 0;
+}
+.control-group { flex: 1; min-width: 140px; }
+.control-group label {
+  display: block; font-size: .78rem; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px;
+}
+.control-group select, .control-group input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  font-family: 'DM Sans', sans-serif; font-size: .9rem;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+.control-group select:focus, .control-group input:focus { border-color: var(--accent); }
+
+/* ---- Submit ---- */
+.submit-btn {
+  width: 100%; padding: 14px;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: var(--radius-md);
+  font-family: 'DM Sans', sans-serif; font-size: .98rem; font-weight: 600;
+  cursor: pointer; letter-spacing: .02em;
+  transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.submit-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 18px rgba(193,119,82,.3);
+}
+.submit-btn:active:not(:disabled) { transform: scale(.98); }
+.submit-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---- Loading ---- */
+.loading-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(250,247,242,.82); backdrop-filter: blur(3px);
+  z-index: 100; align-items: center; justify-content: center; flex-direction: column; gap: 18px;
+}
+.loading-overlay.active { display: flex; }
+.loading-spinner {
+  width: 44px; height: 44px;
+  border: 3px solid var(--border-medium);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { color: var(--text-secondary); font-size: .9rem; }
+.loading-dots { display: flex; gap: 7px; }
+.loading-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--border-medium);
+  animation: pulse-dot 1.1s ease infinite;
+}
+.loading-dot:nth-child(2) { animation-delay: .14s; }
+.loading-dot:nth-child(3) { animation-delay: .28s; }
+.loading-dot:nth-child(4) { animation-delay: .42s; }
+@keyframes pulse-dot {
+  0%, 100% { background: var(--border-medium); transform: scale(1); }
+  50% { background: var(--accent); transform: scale(1.35); }
+}
+
+/* ---- Results ---- */
+.results { display: none; }
+.results.active { display: block; animation: fadeUp .45s ease; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } }
+
+.result-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 28px 30px; margin-bottom: 18px;
+  box-shadow: var(--shadow-md);
+}
+
+/* Score hero */
+.score-hero { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--border-subtle); }
+.score-ring { position: relative; width: 110px; height: 110px; flex-shrink: 0; }
+.score-ring svg { transform: rotate(-90deg); }
+.score-ring .bg { fill: none; stroke: var(--border-subtle); stroke-width: 7; }
+.score-ring .fg {
+  fill: none; stroke: var(--accent); stroke-width: 7;
+  stroke-linecap: round; transition: stroke-dashoffset .9s ease;
+}
+.score-ring .val {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
+.score-ring .num { font-family: 'DM Mono', monospace; font-size: 1.8rem; font-weight: 500; }
+.score-ring .lbl { font-size: .68rem; color: var(--text-muted); }
+
+.score-meta h2 { font-family: 'Playfair Display', serif; font-size: 1.4rem; }
+.score-meta .tier-tag {
+  display: inline-block; padding: 2px 12px; border-radius: 16px;
+  font-size: .8rem; font-weight: 600;
+  background: var(--accent-dim); color: var(--accent);
+  margin-top: 4px;
+}
+.score-meta .info { font-size: .82rem; color: var(--text-secondary); margin-top: 8px; }
+
+/* Award bars */
+.section-heading {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.05rem; margin-bottom: 14px;
+  color: var(--text-primary);
+}
+.award-bars { display: flex; flex-direction: column; gap: 9px; }
+.award-row { display: flex; align-items: center; gap: 10px; }
+.award-letter {
+  width: 24px; text-align: center;
+  font-family: 'DM Mono', monospace; font-weight: 600; font-size: .9rem;
+}
+.award-letter.o { color: var(--award-o); }
+.award-letter.f { color: var(--award-f); }
+.award-letter.m { color: var(--award-m); }
+.award-letter.h { color: var(--award-h); }
+.award-letter.s { color: var(--award-s); }
+.award-track { flex: 1; height: 20px; background: var(--bg-surface); border-radius: 3px; overflow: hidden; }
+.award-fill {
+  height: 100%; border-radius: 3px; display: flex; align-items: center;
+  padding-left: 9px; font-size: .75rem; font-weight: 500;
+  transition: width .7s ease;
+}
+.award-fill.o { background: var(--award-o); color: #fff; }
+.award-fill.f { background: var(--award-f); color: #fff; }
+.award-fill.m { background: var(--award-m); color: #fff; }
+.award-fill.h { background: var(--award-h); color: #fff; }
+.award-fill.s { background: var(--award-s); color: #fff; }
+.award-pct { width: 55px; text-align: right; font-family: 'DM Mono', monospace; font-size: .84rem; color: var(--text-secondary); }
+
+/* Aspect cards */
+.aspect-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 20px; }
+.aspect-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  transition: border-color var(--transition-fast);
+}
+.aspect-card:hover { border-color: var(--border-medium); }
+.aspect-card .aspect-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.aspect-card .aspect-name { font-weight: 600; font-size: .88rem; }
+.aspect-card .aspect-score { font-family: 'DM Mono', monospace; font-size: 1.05rem; font-weight: 500; }
+.aspect-bar { height: 5px; background: #e8e2d6; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+.aspect-bar-fill { height: 100%; border-radius: 3px; transition: width .7s ease; }
+.aspect-bar-fill.abs { background: var(--accent); }
+.aspect-bar-fill.fig { background: var(--sage); }
+.aspect-bar-fill.mod { background: var(--gold); }
+.aspect-notes { font-size: .78rem; color: var(--text-muted); line-height: 1.5; }
+.aspect-notes li { margin-bottom: 2px; }
+
+/* Structure */
+.flags-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 7px; margin-top: 14px; }
+.flag {
+  padding: 7px 10px; border-radius: var(--radius-sm);
+  font-size: .8rem; display: flex; align-items: center; gap: 6px;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+}
+.flag.ok { border-color: rgba(90,138,106,.25); }
+.flag.no { opacity: .5; }
+.flag .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.flag.ok .dot { background: var(--sage); }
+.flag.no .dot { background: var(--error); }
+.meta-stats { margin-top: 14px; font-size: .8rem; color: var(--text-muted); }
+
+/* ---- Stats dashboard ---- */
+.stats-dashboard {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+@media (max-width: 640px) { .stats-dashboard { grid-template-columns: 1fr; } }
+
+.chart-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+}
+.chart-card h4 {
+  font-family: 'Playfair Display', serif;
+  font-size: .95rem; margin-bottom: 12px;
+}
+.chart-card svg { width: 100%; height: auto; }
+.chart-card .axis-label {
+  font-size: .7rem; fill: var(--text-muted);
+  font-family: 'DM Sans', sans-serif;
+}
+
+/* ---- Error ---- */
+.error-msg {
+  display: none; padding: 14px 18px;
+  background: var(--error-dim); border: 1px solid rgba(192,80,74,.25);
+  border-radius: var(--radius-md); color: var(--error);
+  font-size: .87rem; margin-top: 14px;
+}
+.error-msg.active { display: block; }
+
+/* ---- Footer ---- */
+.footer {
+  text-align: center; margin-top: 44px;
+  color: var(--text-muted); font-size: .76rem;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 640px) {
+  .app-container { padding: 24px 14px 44px; }
+  .score-hero { flex-direction: column; text-align: center; }
+  .controls { flex-direction: column; }
+  .result-card { padding: 18px 16px; }
+  .stats-banner { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div class="app-container">
+
+  <header class="header">
+    <h1>MCM / ICM <span class="accent">Award</span> Predictor</h1>
+    <p class="subtitle">上传论文 PDF  &middot;  智能分析  &middot;  预测获奖概率</p>
+  </header>
+
+  <!-- Stats Banner -->
+  <div class="stats-banner" id="statsBanner">
+    <div class="stat-tile">
+      <div class="stat-num" id="statTotal">—</div>
+      <div class="stat-label">累计预测次数</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-num" id="statToday">—</div>
+      <div class="stat-label">今日预测</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-num" id="statTop">—</div>
+      <div class="stat-label">最常预测奖项</div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="upload-zone" id="uploadZone">
+    <div class="upload-icon">&#128206;</div>
+    <h3>拖拽 PDF 到此处或点击上传</h3>
+    <p class="muted">最大 20MB &middot; 传输加密 &middot; 即时清理</p>
+    <input type="file" id="fileInput" accept=".pdf,application/pdf">
+  </div>
+  <div class="file-info" id="fileInfo">
+    <span>&#128196;</span>
+    <span id="fileName"></span>
+    <span style="color:var(--text-muted);font-size:.78rem;" id="fileSize"></span>
+    <span class="remove" id="fileRemove">&#10005;</span>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="control-group">
+      <label for="problemSelect">题目 Problem</label>
+      <select id="problemSelect">
+        <option value="A">A — 连续型</option>
+        <option value="B">B — 离散型</option>
+        <option value="C">C — 数据科学</option>
+        <option value="D">D — 运筹学/网络</option>
+        <option value="E">E — 环境科学</option>
+        <option value="F">F — 政策/社会科学</option>
+      </select>
+    </div>
+  </div>
+
+  <button class="submit-btn" id="submitBtn" disabled>选择文件后开始预测</button>
+  <div class="error-msg" id="errorMsg"></div>
+
+  <!-- Results -->
+  <div class="results" id="results"></div>
+
+  <!-- Stats Dashboard -->
+  <div class="stats-dashboard" id="statsDashboard" style="display:none;">
+    <div class="chart-card">
+      <h4>近期预测分数趋势</h4>
+      <svg id="scoreChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="chart-card">
+      <h4>预测奖项分布</h4>
+      <svg id="awardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+  </div>
+
+  <div class="footer">
+    &#128274; 传输层加密 &middot; 文件即时清理 &middot; 数据不上传至第三方
+  </div>
+</div>
+
+<!-- Loading -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">正在分析论文...</div>
+  <div class="loading-dots">
+    <div class="loading-dot"></div><div class="loading-dot"></div>
+    <div class="loading-dot"></div><div class="loading-dot"></div>
+  </div>
+</div>
+
+<script>
+// ==========================================================================
+// State
+// ==========================================================================
+let selectedFile = null;
+
+const $ = id => document.getElementById(id);
+const uploadZone = $('uploadZone');
+const fileInput = $('fileInput');
+const fileInfo = $('fileInfo');
+const submitBtn = $('submitBtn');
+const errorMsg = $('errorMsg');
+const resultsDiv = $('results');
+const loadingOverlay = $('loadingOverlay');
+
+// ==========================================================================
+// Load stats on page load
+// ==========================================================================
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    $('statTotal').textContent = d.total_predictions.toLocaleString();
+    $('statToday').textContent = d.today_predictions.toLocaleString();
+
+    // Top award
+    const ac = d.award_counts;
+    let top = '—', max = 0;
+    for (const [k, v] of Object.entries(ac)) { if (v > max) { max = v; top = k; } }
+    $('statTop').textContent = max > 0 ? top : '—';
+
+    // Charts
+    drawScoreChart(d.recent_scores || []);
+    drawAwardChart(d.award_counts || {});
+    if (d.total_predictions > 0) { $('statsDashboard').style.display = 'grid'; }
+  } catch (e) { /* silent */ }
+}
+
+function drawScoreChart(scores) {
+  const svg = $('scoreChart');
+  if (!scores.length) {
+    svg.innerHTML = '<text x="200" y="85" text-anchor="middle" fill="#9b8d78" font-size="13" font-family="DM Sans, sans-serif">暂无数据</text>';
+    return;
+  }
+  const W = 400, H = 160, P = { top: 16, right: 20, bottom: 22, left: 36 };
+  const pw = W - P.left - P.right, ph = H - P.top - P.bottom;
+  const vals = scores.map(s => s.score);
+  const yMin = Math.max(0, Math.floor(Math.min(...vals) / 10) * 10);
+  const yMax = Math.min(100, Math.ceil(Math.max(...vals) / 10) * 10 + 10);
+  const yr = yMax - yMin || 1;
+
+  const points = scores.slice(-30).map((s, i) => {
+    const x = P.left + (i / Math.max(scores.slice(-30).length - 1, 1)) * pw;
+    const y = P.top + ph - ((s.score - yMin) / yr) * ph;
+    return `${x},${y}`;
+  }).join(' ');
+
+  // Grid lines
+  let gridLines = '';
+  for (let i = 0; i <= 4; i++) {
+    const y = P.top + (ph * i / 4);
+    const val = yMax - (yr * i / 4);
+    gridLines += `<line x1="${P.left}" x2="${W-P.right}" y1="${y}" y2="${y}" stroke="#e5dcd0" stroke-width="1"/>`;
+    gridLines += `<text x="${P.left-5}" y="${y+4}" text-anchor="end" class="axis-label">${Math.round(val)}</text>`;
+  }
+
+  svg.innerHTML = `
+    ${gridLines}
+    <polyline points="${points}" fill="none" stroke="#c17752" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${points.split(' ').pop().split(',')[0]}" cy="${points.split(' ').pop().split(',')[1]}" r="3.5" fill="#c17752"/>
+  `;
+}
+
+function drawAwardChart(counts) {
+  const svg = $('awardChart');
+  const total = Object.values(counts).reduce((a,b)=>a+b,0);
+  if (!total) {
+    svg.innerHTML = '<text x="200" y="85" text-anchor="middle" fill="#9b8d78" font-size="13" font-family="DM Sans, sans-serif">暂无数据</text>';
+    return;
+  }
+  const W = 400, H = 160, P = { top: 14, right: 20, bottom: 22, left: 20 };
+  const pw = W - P.left - P.right;
+  const awards = ['O','F','M','H','S'];
+  const colors = { O: '#b8860b', F: '#8a8a8a', M: '#a0643a', H: '#7a8a5a', S: '#9b8d78' };
+  const barW = Math.min(48, (pw / 5) - 12);
+  const gap = (pw - barW * 5) / 6;
+
+  let bars = '';
+  awards.forEach((a, i) => {
+    const h = total > 0 ? (counts[a] / Math.max(...Object.values(counts), 1)) * (H - P.top - P.bottom - 10) : 0;
+    const x = P.left + gap + i * (barW + gap);
+    const y = H - P.bottom - h;
+    bars += `<rect x="${x}" y="${y}" width="${barW}" height="${Math.max(h,2)}" rx="3" fill="${colors[a]}" opacity="0.8"/>`;
+    bars += `<text x="${x+barW/2}" y="${H-P.bottom+8}" text-anchor="middle" font-size="11" font-family="DM Mono, monospace" fill="#6b5e4a">${a}</text>`;
+    if (counts[a] > 0) {
+      bars += `<text x="${x+barW/2}" y="${y-5}" text-anchor="middle" font-size="10" font-family="DM Sans, sans-serif" fill="#6b5e4a">${counts[a]}</text>`;
+    }
+  });
+
+  svg.innerHTML = bars;
+}
+
+loadStats();
+
+// ==========================================================================
+// File selection
+// ==========================================================================
+function selectFile(file) {
+  if (!file) return;
+  if (file.type && file.type !== 'application/pdf') { showError('仅接受 PDF 文件'); return; }
+  if (!file.name.toLowerCase().endsWith('.pdf')) { showError('仅接受 .pdf 文件'); return; }
+  if (file.size > 20*1024*1024) { showError('文件过大（上限 20MB）'); return; }
+
+  selectedFile = file;
+  $('fileName').textContent = file.name;
+  $('fileSize').textContent = (file.size/1024/1024).toFixed(2) + ' MB';
+  fileInfo.classList.add('show');
+  uploadZone.classList.add('has-file');
+  submitBtn.disabled = false;
+  submitBtn.textContent = '开始预测 →';
+  errorMsg.classList.remove('active');
+  resultsDiv.classList.remove('active');
+}
+
+function clearFile() {
+  selectedFile = null; fileInput.value = '';
+  fileInfo.classList.remove('show');
+  uploadZone.classList.remove('has-file');
+  submitBtn.disabled = true;
+  submitBtn.textContent = '选择文件后开始预测';
+  resultsDiv.classList.remove('active');
+  errorMsg.classList.remove('active');
+}
+
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault(); uploadZone.classList.remove('drag-over');
+  selectFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => selectFile(fileInput.files[0]));
+$('fileRemove').addEventListener('click', e => { e.stopPropagation(); clearFile(); });
+
+// ==========================================================================
+// Submit
+// ==========================================================================
+submitBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  loadingOverlay.classList.add('active'); submitBtn.disabled = true;
+  errorMsg.classList.remove('active'); resultsDiv.classList.remove('active');
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  fd.append('problem', $('problemSelect').value);
+  fd.append('year', '2026');
+
+  try {
+    const r = await fetch('/api/predict', { method: 'POST', body: fd });
+    if (r.status === 429) { const d = await r.json(); showError(d.detail || '请求过于频繁'); return; }
+    const d = await r.json();
+    if (!r.ok || !d.success) { showError(d.detail || '预测失败'); return; }
+    renderResults(d);
+    resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    loadStats(); // refresh stats after prediction
+  } catch (e) { showError('网络错误：无法连接到服务器'); }
+  finally { loadingOverlay.classList.remove('active'); submitBtn.disabled = false; }
+});
+
+function showError(m) { errorMsg.textContent = m; errorMsg.classList.add('active'); loadingOverlay.classList.remove('active'); submitBtn.disabled = false; }
+
+// ==========================================================================
+// Render
+// ==========================================================================
+function renderResults(d) {
+  const { score, probabilities, aspect_scores, aspect_details, problem, contest, year, quality_tier, emoji, description, metadata, structure } = d;
+
+  const awardNames = { O:'特等奖 O', F:'特等提名 F', M:'一等奖 M', H:'二等奖 H', S:'成功参赛 S' };
+  let best = 'S', bestP = 0;
+  for (const [k,v] of Object.entries(probabilities)) { if (v>bestP) { bestP=v; best=k; } }
+
+  // Bars
+  let probBars = '';
+  for (const [a, p] of Object.entries(probabilities)) {
+    const w = Math.max(p, 0.4);
+    probBars += `<div class="award-row">
+      <span class="award-letter ${a.toLowerCase()}">${a}</span>
+      <div class="award-track"><div class="award-fill ${a.toLowerCase()}" style="width:${w}%;">${p>=4?awardNames[a].split(' ')[0]:''}</div></div>
+      <span class="award-pct">${p.toFixed(1)}%</span></div>`;
+  }
+
+  // Aspect cards
+  const acfg = {
+    abstract: { name:'&#128221; 摘要写作', cls:'abs' },
+    figures:  { name:'&#128202; 图表水平', cls:'fig' },
+    modeling: { name:'&#128300; 建模深度', cls:'mod' },
+  };
+  let cards = '';
+  for (const [k, c] of Object.entries(acfg)) {
+    const s = aspect_scores[k] || 0;
+    const diffs = (aspect_details[k]?.differences || []).map(l => `<li>${l}</li>`).join('');
+    cards += `<div class="aspect-card">
+      <div class="aspect-top"><span class="aspect-name">${c.name}</span><span class="aspect-score">${s.toFixed(0)}/100</span></div>
+      <div class="aspect-bar"><div class="aspect-bar-fill ${c.cls}" style="width:${s}%;"></div></div>
+      <ul class="aspect-notes">${diffs || '<li>与 O 奖论文水平接近</li>'}</ul></div>`;
+  }
+
+  // Structure flags
+  const flags = [
+    ['has_abstract','摘要'],['has_introduction','引言'],['has_methodology','方法论'],
+    ['has_results','结果分析'],['has_conclusion','结论'],['has_references','参考文献'],
+    ['has_sensitivity_analysis','灵敏度分析'],['has_model_validation','模型验证'],
+    ['has_assumption_justification','假设论证'],['has_model_comparison','模型对比'],
+    ['has_error_analysis','误差分析'],['has_dimensional_analysis','量纲分析'],
+  ];
+  let flagsHtml = '';
+  for (const [k, lb] of flags) {
+    const ok = structure[k] === true || structure[k] === 1;
+    flagsHtml += `<div class="flag ${ok?'ok':'no'}"><span class="dot"></span>${lb}</div>`;
+  }
+
+  const r = 48, circ = 2 * Math.PI * r;
+
+  resultsDiv.innerHTML = `
+    <div class="result-card">
+      <div class="score-hero">
+        <div class="score-ring">
+          <svg width="110" height="110" viewBox="0 0 110 110">
+            <circle class="bg" cx="55" cy="55" r="${r}"/>
+            <circle class="fg" cx="55" cy="55" r="${r}"
+              stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - score/100)}"/>
+          </svg>
+          <div class="val"><span class="num">${score.toFixed(0)}</span><span class="lbl">/ 100</span></div>
+        </div>
+        <div class="score-meta">
+          <h2>${emoji} ${quality_tier}</h2>
+          <span class="tier-tag">最可能: ${awardNames[best]}</span>
+          <div class="info">${contest} Problem ${problem} (${year}) &middot; ${metadata.page_count} 页 &middot; ${metadata.image_count} 张图</div>
+          <div class="info" style="margin-top:4px;">${description}</div>
+        </div>
+      </div>
+      <div class="section-heading">获奖概率分布</div>
+      <div class="award-bars">${probBars}</div>
+      <div class="section-heading" style="margin-top:24px;">三维度对比评分</div>
+      <div class="aspect-grid">${cards}</div>
+    </div>
+    <div class="result-card">
+      <div class="section-heading">论文结构分析</div>
+      <div class="flags-grid">${flagsHtml}</div>
+      <div class="meta-stats">
+        完整度: ${(structure.structure_completeness*100).toFixed(0)}% &middot;
+        公式: ${structure.formula_count||0} &middot;
+        表格: ${structure.table_count||0} &middot;
+        图表: ${structure.figure_caption_count||0} &middot;
+        引用: ${structure.citation_count||0} 处 &middot;
+        总字数: ~${((structure.total_word_count||0)/1000).toFixed(1)}k
+      </div>
+    </div>
+  `;
+  resultsDiv.classList.add('active');
+}
+</script>
+</body>
+</html>
