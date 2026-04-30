@@ -1,0 +1,14 @@
+# PDF files
+*.pdf
+
+# Data directory (contains PDFs and processed data)
+data/
+
+# Claude internal
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
