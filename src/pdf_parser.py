@@ -61,6 +61,11 @@ class PDFParser:
             
             # 提取论文结构特征
             structure = self._analyze_paper_structure(full_text, doc)
+            self._sync_abstract_structure_flag(
+                structure,
+                abstract,
+                has_abstract_heading=self._has_abstract_or_summary_heading(doc),
+            )
             
             doc.close()
             
@@ -74,7 +79,7 @@ class PDFParser:
             }
             
         except Exception as e:
-            print(f"解析 PDF 失败 {pdf_path}: {e}")
+            print(f"解析 PDF 失败 {Path(pdf_path).name}")
             return {
                 'abstract': '',
                 'full_text': '',
@@ -106,41 +111,104 @@ class PDFParser:
             return abstract
         
         # 方法2：fallback - 返回第一页文本
-        print("  未找到 Abstract 关键词，使用第一页全文")
+        print("  未找到 Abstract/Summary 关键词，使用第一页全文")
         return doc[0].get_text()[:2000]  # 限制长度
     
     def _extract_by_keywords(self, text: str) -> Optional[str]:
         """通过关键词定位摘要"""
-        text_lower = text.lower()
-        
-        # 查找 Abstract 开始位置
-        abstract_start = -1
-        for keyword in self.abstract_keywords:
-            pos = text_lower.find(keyword.lower())
-            if pos != -1:
-                abstract_start = pos + len(keyword)
-                break
-        
-        if abstract_start == -1:
-            return None
-        
-        # 查找 Introduction 结束位置
-        abstract_end = len(text)
-        for keyword in self.intro_keywords:
-            pos = text_lower.find(keyword.lower(), abstract_start)
-            if pos != -1:
-                abstract_end = min(abstract_end, pos)
-        
-        # 提取摘要
+        # Prefer line-level headings so "MCM/ICM Summary Sheet" is not treated as
+        # the start of the actual summary.
+        heading_pattern = re.compile(
+            r"(?im)^\s*(abstract|summary)\b(?!\s+sheet)\s*[:：]?\s*$"
+        )
+        headings = list(heading_pattern.finditer(text))
+
+        if headings:
+            # In MCM summary sheets the actual "Summary" heading appears after
+            # "Summary Sheet", so the last heading in the first pages is the safest.
+            abstract_start = headings[-1].end()
+        else:
+            inline_heading_pattern = re.compile(
+                r"(?im)^\s*(abstract|summary)\b(?!\s+sheet)\s*[:：]\s+"
+            )
+            inline_headings = list(inline_heading_pattern.finditer(text))
+            if inline_headings:
+                abstract_start = inline_headings[-1].end()
+            else:
+                text_lower = text.lower()
+                abstract_start = -1
+                for keyword in self.abstract_keywords:
+                    if keyword.lower() == "summary":
+                        continue
+                    pos = text_lower.find(keyword.lower())
+                    if pos != -1:
+                        abstract_start = pos + len(keyword)
+                        break
+
+                if abstract_start == -1:
+                    return None
+
+        end_pattern = re.compile(
+            r"(?im)^\s*(keywords?|contents|table\s+of\s+contents|"
+            r"introduction|1\.?\s+(?:introduction|problem|restatement|"
+            r"assumptions?|notation|model|our\s+work))\b"
+        )
+        end_match = end_pattern.search(text, abstract_start)
+        abstract_end = end_match.start() if end_match else len(text)
+
         abstract = text[abstract_start:abstract_end].strip()
-        
-        # 清理文本
         abstract = self._clean_text(abstract)
-        
-        return abstract if len(abstract) > 50 else None
+
+        return abstract if len(abstract.split()) >= 50 else None
+
+    @staticmethod
+    def _sync_abstract_structure_flag(
+        structure: Dict,
+        abstract: str,
+        *,
+        has_abstract_heading: bool = True,
+    ) -> None:
+        """Treat either Abstract or Summary extraction as a valid abstract section."""
+        if not has_abstract_heading or len((abstract or "").split()) < 50:
+            return
+
+        was_present = bool(structure.get("has_abstract"))
+        structure["has_abstract"] = True
+
+        core_sections = [
+            "has_abstract",
+            "has_introduction",
+            "has_methodology",
+            "has_results",
+            "has_conclusion",
+            "has_references",
+        ]
+        if not was_present:
+            structure["section_count"] = sum(
+                1 for key in core_sections if structure.get(key, False)
+            )
+        structure["structure_completeness"] = sum(
+            1 for key in core_sections if structure.get(key, False)
+        ) / len(core_sections)
+
+    @staticmethod
+    def _has_abstract_or_summary_heading(doc: fitz.Document) -> bool:
+        """Detect an actual Abstract/Summary heading without matching Summary Sheet."""
+        text = ""
+        for page_num in range(min(2, len(doc))):
+            text += doc[page_num].get_text() + "\n"
+        return bool(
+            re.search(
+                r"(?im)^\s*(abstract|summary)\b(?!\s+sheet)\s*(?:[:：]\s+|[:：]?\s*$)",
+                text,
+            )
+        )
     
     def _clean_text(self, text: str) -> str:
         """清理文本"""
+        # Join PDF line-break hyphenation before whitespace normalization.
+        text = re.sub(r'(?<=[A-Za-z])-\s+(?=[a-z])', '', text)
+        text = re.sub(r'(?<=\d)-\s+(?=[A-Za-z])', ' ', text)
         # 移除多余空白
         text = re.sub(r'\s+', ' ', text)
         
@@ -379,6 +447,7 @@ class PDFParser:
             'page_count': len(doc),
             'file_name': Path(pdf_path).name,
         }
+        metadata['raw_image_count'] = sum(len(page.get_images()) for page in doc)
         
         # 从路径提取年份、赛道、题目
         from src.utils import parse_problem_path, get_paper_info_from_filename
@@ -428,7 +497,7 @@ class PDFParser:
         
         # 标准节检测
         section_patterns = {
-            'has_abstract': r'\babstract\b',
+            'has_abstract': r'(?m)^\s*(abstract|summary)\b(?!\s+sheet)\s*[:：]?\s*$',
             'has_introduction': r'\bintroduction\b',
             'has_methodology': r'\b(method|methodology|approach|model\s+formulation|mathematical\s+model)\b',
             'has_results': r'\b(results?|analysis|findings|discussion)\b',

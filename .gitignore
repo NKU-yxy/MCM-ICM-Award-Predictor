@@ -10,6 +10,23 @@ models/*.json
 # Claude internal
 .claude/
 
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets.*
+credentials.*
+
+# Logs / local runtime state
+*.log
+logs/
+usage_stats*.json
+
 # Python bytecode & cache
 __pycache__/
 *.pyc

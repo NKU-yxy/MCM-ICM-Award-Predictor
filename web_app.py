@@ -19,13 +19,15 @@ import uuid
 import time
 import json
 import logging
+import hashlib
 import tempfile
 import threading
+import re
 from pathlib import Path
 from datetime import datetime, date
 from collections import defaultdict
 
-from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -34,7 +36,10 @@ import uvicorn
 # --- project path ---
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from predict_award import AwardPredictor
+from src.pdf_parser import PDFParser
+from src.image_features import ImageFeatureExtractor
+from src.llm_rubric_scorer import DeepSeekRubricScorer
+from src.problem_detector import ProblemDetector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger("mcm-web")
@@ -45,20 +50,33 @@ logger = logging.getLogger("mcm-web")
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 ALLOWED_MIME = {"application/pdf"}
 TEMP_DIR = Path(tempfile.gettempdir()) / "mcm_predictor"
-TEMP_DIR.mkdir(exist_ok=True)
+TEMP_DIR.mkdir(mode=0o700, exist_ok=True)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Rate limiting
-RATE_LIMIT_WINDOW = 60       # seconds
-RATE_LIMIT_MAX_REQUESTS = 10  # per window per IP
+RATE_LIMIT_WINDOW = 60 * 60       # seconds
+RATE_LIMIT_MAX_REQUESTS = 5       # per identity per hour
 rate_limit_store: dict[str, list[float]] = defaultdict(list)
+rate_limit_lock = threading.Lock()
 
-# Predictor singleton (loaded once at startup)
-_predictor: AwardPredictor | None = None
-_predictor_lock = threading.Lock()
+# Public deployment settings
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "0").strip().lower() in {"1", "true", "yes"}
+REQUIRE_HTTPS = os.getenv("REQUIRE_HTTPS", "0").strip().lower() in {"1", "true", "yes"}
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver").split(",")
+    if host.strip()
+]
+
+# Lightweight evaluator singletons
+_evaluator_lock = threading.Lock()
+_pdf_parser: PDFParser | None = None
+_image_extractor: ImageFeatureExtractor | None = None
+_rubric_scorer: DeepSeekRubricScorer | None = None
+_problem_detector: ProblemDetector | None = None
 
 # Usage statistics (in-memory, resets on restart)
-STATS_FILE = Path(__file__).parent / "data" / "usage_stats.json"
+STATS_FILE = Path(__file__).parent / "data" / "usage_stats_deepseek.json"
 _stats_lock = threading.Lock()
 _usage_stats: dict = {
     "total_predictions": 0,
@@ -95,6 +113,7 @@ def _save_stats():
 
 def record_prediction(score: float, problem: str, best_award: str):
     """线程安全地记录一次预测"""
+    best_award = "S" if best_award in {"S/U", "U"} else best_award
     with _stats_lock:
         _usage_stats["total_predictions"] += 1
         if _usage_stats.get("today_date") == str(date.today()):
@@ -116,17 +135,40 @@ def record_prediction(score: float, problem: str, best_award: str):
         _save_stats()
 
 
-def get_predictor() -> AwardPredictor:
-    """线程安全的预测器单例"""
-    global _predictor
-    if _predictor is None:
-        with _predictor_lock:
-            if _predictor is None:
-                logger.info("加载预测模型 (首次启动)...")
-                model_path = os.environ.get("MODEL_PATH", "models/scoring_model.pkl")
-                _predictor = AwardPredictor(model_path=model_path)
-                logger.info("模型加载完成")
-    return _predictor
+def public_rubric_payload(rubric: dict) -> dict:
+    """Return only fields needed by the browser, excluding provider fingerprinting."""
+    allowed = {
+        "status",
+        "score",
+        "details",
+        "award_prediction",
+        "probabilities",
+        "strengths",
+        "weaknesses",
+        "comments",
+    }
+    return {key: value for key, value in (rubric or {}).items() if key in allowed}
+
+
+def get_evaluators():
+    """线程安全的 AI 评估组件单例。"""
+    global _pdf_parser, _image_extractor, _rubric_scorer, _problem_detector
+    if _pdf_parser is None:
+        with _evaluator_lock:
+            if _pdf_parser is None:
+                logger.info("初始化 AI 评估组件...")
+                _pdf_parser = PDFParser()
+                _image_extractor = ImageFeatureExtractor()
+                _rubric_scorer = DeepSeekRubricScorer()
+                _problem_detector = ProblemDetector()
+                logger.info("AI 评估组件初始化完成")
+    return _pdf_parser, _image_extractor, _rubric_scorer, _problem_detector
+
+
+def detect_summary_sheet_problem(full_text: str) -> str | None:
+    """Read the official MCM/ICM summary sheet problem marker when present."""
+    match = re.search(r"(?is)\bProblem\s+Chosen\s*[:：]?\s*([A-F])\b", full_text or "")
+    return match.group(1).upper() if match else None
 
 
 # ============================================================================
@@ -138,6 +180,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """添加安全响应头"""
 
     async def dispatch(self, request: Request, call_next):
+        forwarded_proto = request.headers.get("X-Forwarded-Proto", "")
+        if REQUIRE_HTTPS and request.url.path != "/health":
+            is_https = request.url.scheme == "https" or (
+                TRUST_PROXY_HEADERS and forwarded_proto.split(",")[0].strip() == "https"
+            )
+            if not is_https:
+                return JSONResponse({"detail": "HTTPS required"}, status_code=403)
+
         response = await call_next(request)
         # 防止 MIME 嗅探
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -155,6 +205,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        if request.url.scheme == "https" or (
+            TRUST_PROXY_HEADERS and forwarded_proto.split(",")[0].strip() == "https"
+        ):
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
 
@@ -163,32 +219,47 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _get_client_ip(request: Request) -> str:
-        """获取真实客户端 IP（处理代理/ Render 的 X-Forwarded-For 头）"""
-        forwarded = request.headers.get("X-Forwarded-For")
+        """获取客户端 IP；只有显式信任反向代理时才读取 X-Forwarded-For。"""
+        forwarded = request.headers.get("X-Forwarded-For") if TRUST_PROXY_HEADERS else None
         if forwarded:
             return forwarded.split(",")[0].strip()
         if request.client:
             return request.client.host
         return "unknown"
 
+    @classmethod
+    def _client_identity(cls, request: Request) -> str:
+        ip = cls._get_client_ip(request)
+        user_agent = request.headers.get("User-Agent", "")[:200]
+        digest = hashlib.sha256(f"{ip}|{user_agent}".encode("utf-8")).hexdigest()[:16]
+        return digest
+
     async def dispatch(self, request: Request, call_next):
         if request.url.path == "/api/predict" and request.method == "POST":
-            client_ip = self._get_client_ip(request)
+            client_id = self._client_identity(request)
             now = time.time()
             window_start = now - RATE_LIMIT_WINDOW
 
-            rate_limit_store[client_ip] = [
-                t for t in rate_limit_store[client_ip] if t > window_start
-            ]
+            with rate_limit_lock:
+                stale_keys = [
+                    key for key, values in rate_limit_store.items()
+                    if not values or max(values) <= window_start
+                ]
+                for key in stale_keys:
+                    rate_limit_store.pop(key, None)
 
-            if len(rate_limit_store[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
-                wait = int(RATE_LIMIT_WINDOW - (now - rate_limit_store[client_ip][0]))
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"请求过于频繁，请 {wait} 秒后再试",
-                )
+                rate_limit_store[client_id] = [
+                    t for t in rate_limit_store[client_id] if t > window_start
+                ]
 
-            rate_limit_store[client_ip].append(now)
+                if len(rate_limit_store[client_id]) >= RATE_LIMIT_MAX_REQUESTS:
+                    wait = int(RATE_LIMIT_WINDOW - (now - rate_limit_store[client_id][0]))
+                    return JSONResponse(
+                        {"detail": f"一小时内最多提交 5 次，请 {max(wait, 1)} 秒后再试"},
+                        status_code=429,
+                    )
+
+                rate_limit_store[client_id].append(now)
 
         return await call_next(request)
 
@@ -198,9 +269,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 # ============================================================================
 
 app = FastAPI(
-    title="MCM/ICM Award Predictor",
-    description="美赛论文获奖等级预测",
-    version="3.0",
+    title="MCM/ICM Award Reviewer",
+    description="基于 AI 的美赛论文严苛评审",
+    version="4.0",
 )
 
 # 注册中间件
@@ -208,7 +279,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"],  # 生产环境改为实际域名
+    allowed_hosts=ALLOWED_HOSTS,
 )
 
 
@@ -229,7 +300,11 @@ async def index():
 @app.get("/health")
 async def health():
     """健康检查"""
-    return {"status": "ok", "predictor_loaded": _predictor is not None}
+    return {
+        "status": "ok",
+        "mode": "ai_rubric",
+        "evaluator_loaded": _pdf_parser is not None,
+    }
 
 
 @app.get("/api/stats")
@@ -247,7 +322,6 @@ async def stats():
 @app.post("/api/predict")
 async def predict(
     request: Request,
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     problem: str = Form("auto"),
     year: str = Form("auto"),
@@ -273,11 +347,24 @@ async def predict(
     if not original_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="仅接受 .pdf 后缀的文件")
 
-    # 消毒文件名 (移除路径遍历字符)
-    safe_name = Path(original_name).name.replace("..", "_")
+    # 临时落盘只使用 ASCII 文件名，避免中文名在部分客户端/终端编码下变成非法路径。
+    safe_name = "upload.pdf"
 
     # ---- 3. 读取 & 大小校验 ----
-    contents = await file.read()
+    chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"文件过大，上限 20MB",
+            )
+        chunks.append(chunk)
+    contents = b"".join(chunks)
 
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="文件为空")
@@ -297,74 +384,85 @@ async def predict(
     tmp_path = TEMP_DIR / f"{file_id}_{safe_name}"
     tmp_path.write_bytes(contents)
 
-    # 注册清理任务
-    background_tasks.add_task(_cleanup_temp_file, tmp_path)
-
     # ---- 6. 解析参数 ----
     problem_arg = problem.strip().upper() if problem.strip().lower() != "auto" else None
     year_arg = int(year.strip()) if year.strip().lower() != "auto" and year.strip().isdigit() else None
 
-    # ---- 7. 运行预测 ----
+    # ---- 7. 解析 PDF 并调用 AI 评分 ----
     try:
-        predictor = get_predictor()
-        result = predictor.predict(
-            str(tmp_path),
-            problem=problem_arg,
-            year=year_arg,
-            verbose=False,
+        pdf_parser, image_extractor, rubric_scorer, problem_detector = get_evaluators()
+        parsed = pdf_parser.parse(str(tmp_path))
+        if not parsed.get("success"):
+            logger.warning("PDF 解析失败")
+            raise HTTPException(status_code=400, detail="PDF 解析失败，请确认文件未损坏且未加密")
+
+        abstract = parsed.get("abstract", "")
+        full_text = parsed.get("full_text", "")
+        images = parsed.get("images", [])
+        metadata = parsed.get("metadata", {})
+        structure = parsed.get("structure", {})
+        detection = problem_detector.detect(full_text, str(tmp_path), year_arg)
+        summary_problem = detect_summary_sheet_problem(full_text)
+        problem_detected = problem_arg or summary_problem or detection.get("problem", "auto")
+        year_detected = year_arg or detection.get("year") or problem_detector.detect_year(full_text, str(tmp_path)) or "auto"
+        contest_detected = detection.get(
+            "contest",
+            "MCM" if str(problem_detected).upper() in {"A", "B", "C"} else "ICM",
         )
+        image_result = image_extractor.extract(images)
+        page_count = int(metadata.get("page_count", 0) or 0)
+        ref_count = int(metadata.get("ref_count", 0) or 0)
+        raw_image_count = int(metadata.get("raw_image_count", 0) or 0)
+        figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
+        display_image_count = max(len(images), raw_image_count, figure_caption_count)
+
+        llm_rubric = rubric_scorer.score(
+            abstract=abstract,
+            full_text=full_text,
+            structure=structure,
+            image_result=image_result,
+            image_count=display_image_count,
+            page_count=page_count,
+            ref_count=ref_count,
+            problem=problem_detected,
+            contest=contest_detected,
+            year=year_detected,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"预测失败: {e}")
-        raise HTTPException(status_code=500, detail=f"预测失败: {str(e)}")
+        logger.exception("预测失败")
+        raise HTTPException(status_code=500, detail="预测失败，请稍后重试")
+    finally:
+        _cleanup_temp_file(tmp_path)
 
     # ---- 8. 记录统计 ----
-    if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error", "棰勬祴澶辫触"))
-
-    if result.get("is_mcm") is False:
-        return JSONResponse({
-            "success": True,
-            "is_mcm": False,
-            "message": result.get("message", "非美赛PDF，不予评奖"),
-            "rejection_reason": result.get("rejection_reason", "非美赛PDF，不予评奖"),
-            "mcm_relevance": round(float(result.get("mcm_relevance", 0.0)), 3),
-            "probabilities": {"O": 0, "F": 0, "M": 0, "H": 0, "S": 0},
-            "metadata": {
-                "abstract_length": result.get("metadata", {}).get("abstract_length", 0),
-                "image_count": result.get("metadata", {}).get("image_count", 0),
-                "page_count": result.get("metadata", {}).get("page_count", 0),
-                "ref_count": result.get("metadata", {}).get("ref_count", 0),
-            },
-        })
-
-    best_award = max(result["probabilities"], key=result["probabilities"].get) if result.get("probabilities") else "S"
-    record_prediction(float(result.get("score", 0)), result.get("problem", "?"), best_award)
+    record_prediction(
+        float(llm_rubric.get("score", 0)),
+        str(problem_detected or "?"),
+        str(llm_rubric.get("award_prediction", "S/U")),
+    )
 
     # ---- 9. 返回结果 ----
     return JSONResponse({
         "success": True,
         "is_mcm": True,
-        "score": round(result["score"], 1),
-        "probabilities": {
-            k: round(v * 100, 1) for k, v in result["probabilities"].items()
-        },
-        "aspect_scores": result.get("aspect_scores", {}),
-        "aspect_details": result.get("aspect_details", {}),
-        "similarity": round(result["similarity"], 4),
-        "problem": result["problem"],
-        "contest": result["contest"],
-        "year": result["year"],
-        "quality_tier": result["quality_tier"],
-        "emoji": result["emoji"],
-        "description": result["description"],
-        "mcm_relevance": round(float(result.get("mcm_relevance", 1.0)), 3),
+        "mode": "ai_rubric",
+        "llm_rubric": public_rubric_payload(llm_rubric),
+        "problem": problem_detected,
+        "contest": contest_detected,
+        "year": year_detected,
         "metadata": {
-            "abstract_length": result["metadata"]["abstract_length"],
-            "image_count": result["metadata"]["image_count"],
-            "page_count": result["metadata"]["page_count"],
-            "ref_count": result["metadata"]["ref_count"],
+            "abstract_length": len(abstract),
+            "abstract_word_count": len(abstract.split()),
+            "full_text_word_count": len(full_text.split()),
+            "image_count": display_image_count,
+            "filtered_image_count": len(images),
+            "raw_image_count": raw_image_count,
+            "page_count": page_count,
+            "ref_count": ref_count,
         },
-        "structure": result["metadata"].get("structure", {}),
+        "structure": structure,
     })
 
 
@@ -385,16 +483,11 @@ def _cleanup_temp_file(path: Path):
 
 @app.on_event("startup")
 async def startup():
-    """预热模型"""
+    """初始化轻量组件"""
     _load_stats()
     logger.info(f"已加载统计: {_usage_stats['total_predictions']} 次历史预测")
-    logger.info("服务启动，预热预测模型...")
-    try:
-        get_predictor()
-    except FileNotFoundError:
-        logger.warning(
-            "模型文件不存在！请先运行: python scripts/train_scoring_model.py"
-        )
+    logger.info("服务启动，使用 AI 作为主评审...")
+    get_evaluators()
     # 清理旧临时文件
     for f in TEMP_DIR.glob("*.pdf"):
         try:

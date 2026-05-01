@@ -34,6 +34,7 @@ from src.probability_model_v2 import EnhancedAwardEstimator
 from src.problem_detector import ProblemDetector, detect_problem
 from src.award_prior import get_award_prior, get_problem_profile, list_available_data
 from src.ocsvm_scorer import OCSVMScorer
+from src.llm_rubric_scorer import DeepSeekRubricScorer
 from src.mcm_relevance import (
     LightweightSemanticEncoder,
     MCMRelevanceDetector,
@@ -88,6 +89,7 @@ class AwardPredictor:
             encoder=self.semantic_encoder,
             params=self.model_data.get('mcm_relevance_model'),
         )
+        self.rubric_scorer = DeepSeekRubricScorer()
         
         # 初始化 OC-SVM 打分器（如有）
         ocsvm_params = self.model_data.get('ocsvm_scorer')
@@ -192,6 +194,9 @@ class AwardPredictor:
                     'structure': structure,
                 }
                 result['relevance_details'] = relevance
+                result['llm_rubric'] = self.rubric_scorer.unavailable(
+                    '非美赛PDF，不调用 DeepSeek 评分'
+                )
                 if verbose:
                     logger.info(
                         f"  非美赛PDF，不予评奖 (relevance={relevance.get('mcm_relevance', 0):.2f})"
@@ -286,6 +291,19 @@ class AwardPredictor:
                 text_result, image_result, structure, images,
                 abstract, full_text, page_count, ref_count,
             )
+
+            llm_rubric = self.rubric_scorer.score(
+                abstract=abstract,
+                full_text=full_text,
+                structure=structure,
+                image_result=image_result,
+                image_count=len(images),
+                page_count=page_count,
+                ref_count=ref_count,
+                problem=problem,
+                contest=contest,
+                year=year,
+            )
             
             # ==================== 步骤6: 贝叶斯概率估计 ====================
             if verbose:
@@ -309,6 +327,7 @@ class AwardPredictor:
                 'score': score,
                 'aspect_scores': aspect_scores,
                 'aspect_details': aspect_details,
+                'llm_rubric': llm_rubric,
                 'similarity': float(similarity),
                 'problem': problem,
                 'contest': contest,

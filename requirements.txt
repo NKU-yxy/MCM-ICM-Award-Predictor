@@ -14,3 +14,6 @@ PyYAML>=6.0
 fastapi>=0.100.0
 uvicorn>=0.20.0
 python-multipart>=0.0.5
+
+# DeepSeek API access (OpenAI-compatible SDK)
+openai>=1.0.0

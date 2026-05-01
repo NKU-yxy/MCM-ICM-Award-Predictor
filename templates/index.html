@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MCM/ICM Award Predictor — 美赛论文获奖预测</title>
+<title>MCM/ICM Award Predictor — 美赛论文严苛评审</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -259,6 +259,12 @@ body::before {
   width: 24px; text-align: center;
   font-family: 'DM Mono', monospace; font-weight: 600; font-size: .9rem;
 }
+.award-name {
+  width: 60px;
+  color: var(--text-secondary);
+  font-size: .78rem;
+  white-space: nowrap;
+}
 .award-letter.o { color: var(--award-o); }
 .award-letter.f { color: var(--award-f); }
 .award-letter.m { color: var(--award-m); }
@@ -297,6 +303,139 @@ body::before {
 .aspect-bar-fill.mod { background: var(--gold); }
 .aspect-notes { font-size: .78rem; color: var(--text-muted); line-height: 1.5; }
 .aspect-notes li { margin-bottom: 2px; }
+
+/* Strict rubric */
+.rubric-card {
+  border-color: rgba(184,134,11,.28);
+  background:
+    linear-gradient(180deg, rgba(184,134,11,.055), transparent 38%),
+    var(--bg-card);
+}
+.rubric-hero {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+  padding-bottom: 20px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.rubric-score {
+  width: 112px;
+  height: 112px;
+  border: 1px solid rgba(184,134,11,.28);
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #fffaf0;
+  box-shadow: inset 0 0 0 8px rgba(184,134,11,.08);
+}
+.rubric-score .num {
+  font-family: 'DM Mono', monospace;
+  font-size: 2rem;
+  font-weight: 500;
+  color: var(--gold);
+  line-height: 1;
+}
+.rubric-score .lbl { font-size: .68rem; color: var(--text-muted); margin-top: 4px; }
+.rubric-kicker {
+  font-family: 'DM Mono', monospace;
+  font-size: .72rem;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 4px;
+}
+.rubric-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.35rem;
+  line-height: 1.25;
+}
+.rubric-comment {
+  color: var(--text-secondary);
+  font-size: .86rem;
+  margin-top: 8px;
+}
+.rubric-status {
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-medium);
+  color: var(--text-secondary);
+  font-size: .86rem;
+}
+.rubric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+.rubric-metric {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.rubric-metric-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.rubric-metric-name { font-size: .82rem; font-weight: 600; color: var(--text-secondary); }
+.rubric-metric-score { font-family: 'DM Mono', monospace; color: var(--text-primary); font-size: .88rem; }
+.rubric-track { height: 6px; border-radius: 4px; overflow: hidden; background: #e8e2d6; }
+.rubric-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--gold), var(--accent)); }
+.rubric-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 16px;
+}
+.rubric-list {
+  background: rgba(255,253,249,.64);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.rubric-list h4 {
+  font-size: .78rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 6px;
+}
+.rubric-list ul {
+  margin-left: 16px;
+  color: var(--text-muted);
+  font-size: .8rem;
+  line-height: 1.5;
+}
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.evidence-tile {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.evidence-value {
+  font-family: 'DM Mono', monospace;
+  color: var(--text-primary);
+  font-size: .95rem;
+  overflow-wrap: anywhere;
+}
+.evidence-label {
+  color: var(--text-muted);
+  font-size: .74rem;
+  margin-top: 3px;
+}
 
 /* Structure */
 .flags-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 7px; margin-top: 14px; }
@@ -360,6 +499,8 @@ body::before {
   .controls { flex-direction: column; }
   .result-card { padding: 18px 16px; }
   .stats-banner { flex-direction: column; }
+  .rubric-hero { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+  .rubric-lists { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -368,8 +509,8 @@ body::before {
 <div class="app-container">
 
   <header class="header">
-    <h1>MCM / ICM <span class="accent">Award</span> Predictor</h1>
-    <p class="subtitle">上传论文 PDF  &middot;  智能分析  &middot;  预测获奖概率</p>
+    <h1>MCM / ICM <span class="accent">Award</span> Reviewer</h1>
+    <p class="subtitle">上传论文 PDF  &middot;  严苛评审  &middot;  O 奖特征对照</p>
   </header>
 
   <!-- Stats Banner -->
@@ -418,7 +559,7 @@ body::before {
     </div>
   </div>
 
-  <button class="submit-btn" id="submitBtn" disabled>选择文件后开始预测</button>
+  <button class="submit-btn" id="submitBtn" disabled>选择文件后开始评审</button>
   <div class="error-msg" id="errorMsg"></div>
 
   <!-- Results -->
@@ -427,17 +568,17 @@ body::before {
   <!-- Stats Dashboard -->
   <div class="stats-dashboard" id="statsDashboard" style="display:none;">
     <div class="chart-card">
-      <h4>近期预测分数趋势</h4>
+      <h4>近期评分趋势</h4>
       <svg id="scoreChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div class="chart-card">
-      <h4>预测奖项分布</h4>
+      <h4>奖项判断分布</h4>
       <svg id="awardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
   </div>
 
   <div class="footer">
-    &#128274; 传输层加密 &middot; 文件即时清理 &middot; 数据不上传至第三方
+    &#128274; 传输层加密 &middot; 文件即时清理 &middot; 启用评审时仅发送摘要与统计特征
   </div>
 </div>
 
@@ -571,7 +712,7 @@ function selectFile(file) {
   fileInfo.classList.add('show');
   uploadZone.classList.add('has-file');
   submitBtn.disabled = false;
-  submitBtn.textContent = '开始预测 →';
+  submitBtn.textContent = '开始严苛评审 →';
   errorMsg.classList.remove('active');
   resultsDiv.classList.remove('active');
 }
@@ -581,7 +722,7 @@ function clearFile() {
   fileInfo.classList.remove('show');
   uploadZone.classList.remove('has-file');
   submitBtn.disabled = true;
-  submitBtn.textContent = '选择文件后开始预测';
+  submitBtn.textContent = '选择文件后开始评审';
   resultsDiv.classList.remove('active');
   errorMsg.classList.remove('active');
 }
@@ -626,61 +767,108 @@ function showError(m) { errorMsg.textContent = m; errorMsg.classList.add('active
 // ==========================================================================
 // Render
 // ==========================================================================
-function renderResults(d) {
-  const { score, probabilities, aspect_scores, aspect_details, problem, contest, year, quality_tier, emoji, description, metadata, structure } = d;
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
 
-  if (d.is_mcm === false) {
-    resultsDiv.innerHTML = `
-      <div class="result-card">
-        <div class="score-hero">
-          <div class="score-meta">
-            <h2>非美赛PDF</h2>
-            <span class="tier-tag">不予评奖</span>
-            <div class="info" style="margin-top:10px;">${d.rejection_reason || d.message || '非美赛PDF，不予评奖'}</div>
-            <div class="info">MCM/ICM relevance: ${((d.mcm_relevance || 0) * 100).toFixed(0)}%</div>
-          </div>
-        </div>
-        <div class="meta-stats">
-          页数: ${metadata?.page_count || 0} &middot;
-          图片: ${metadata?.image_count || 0} &middot;
-          摘要字符: ${metadata?.abstract_length || 0}
-        </div>
-      </div>`;
-    resultsDiv.classList.add('active');
-    return;
+function pctWidth(score, maxScore) {
+  const n = Number(score) || 0;
+  return Math.max(0, Math.min(100, n / Math.max(maxScore, 1) * 100));
+}
+
+function renderAwardProbabilities(probabilities) {
+  const labels = [
+    ['O', '特等奖'],
+    ['F', '特提名'],
+    ['M', '一等奖'],
+    ['H', '二等奖'],
+    ['S', '成功参赛'],
+  ];
+  const rows = labels.map(([key, label]) => {
+    const value = Math.max(0, Math.min(100, Number(probabilities?.[key]) || 0));
+    const width = Math.max(value, value > 0 ? 2 : 0);
+    return `<div class="award-row">
+      <div class="award-letter ${key.toLowerCase()}">${key}</div>
+      <div class="award-name">${label}</div>
+      <div class="award-track">
+        <div class="award-fill ${key.toLowerCase()}" style="width:${width}%;"></div>
+      </div>
+      <div class="award-pct">${value.toFixed(0)}%</div>
+    </div>`;
+  }).join('');
+
+  return `<div style="margin-top:16px;">
+    <div class="section-heading">五档奖项概率</div>
+    <div class="award-bars">${rows}</div>
+  </div>`;
+}
+
+function renderRubric(rubric) {
+  if (!rubric || !rubric.status) return '';
+
+  if (rubric.status !== 'ok') {
+    const title = rubric.status === 'failed' ? '评审失败' : '评审未启用';
+    const comment = escapeHtml(rubric.comments || '未配置评审 API Key，当前无法完成 AI 评分。');
+    return `<div class="result-card rubric-card">
+      <div class="section-heading">${title}</div>
+      <div class="rubric-status">${comment}</div>
+    </div>`;
   }
 
-  const awardNames = { O:'特等奖 O', F:'特等提名 F', M:'一等奖 M', H:'二等奖 H', S:'成功参赛 S' };
-  let best = 'S', bestP = 0;
-  for (const [k,v] of Object.entries(probabilities)) { if (v>bestP) { bestP=v; best=k; } }
+  const details = rubric.details || {};
+  const metrics = [
+    ['content_score', '摘要内容与建模逻辑', 30],
+    ['length_style_score', '摘要长度与写作方式', 20],
+    ['visual_score', '图表丰富度与美观性', 25],
+    ['conclusion_score', '结论合理性与验证', 15],
+    ['writing_score', '学术英语表达', 10],
+  ];
+  const metricHtml = metrics.map(([key, name, maxScore]) => {
+    const val = Number(details[key]) || 0;
+    return `<div class="rubric-metric">
+      <div class="rubric-metric-top">
+        <span class="rubric-metric-name">${name}</span>
+        <span class="rubric-metric-score">${val.toFixed(0)}/${maxScore}</span>
+      </div>
+      <div class="rubric-track"><div class="rubric-fill" style="width:${pctWidth(val, maxScore)}%;"></div></div>
+    </div>`;
+  }).join('');
 
-  // Bars
-  let probBars = '';
-  for (const [a, p] of Object.entries(probabilities)) {
-    const w = Math.max(p, 0.4);
-    probBars += `<div class="award-row">
-      <span class="award-letter ${a.toLowerCase()}">${a}</span>
-      <div class="award-track"><div class="award-fill ${a.toLowerCase()}" style="width:${w}%;">${p>=4?awardNames[a].split(' ')[0]:''}</div></div>
-      <span class="award-pct">${p.toFixed(1)}%</span></div>`;
-  }
-
-  // Aspect cards
-  const acfg = {
-    abstract: { name:'&#128221; 摘要写作', cls:'abs' },
-    figures:  { name:'&#128202; 图表水平', cls:'fig' },
-    modeling: { name:'&#128300; 建模深度', cls:'mod' },
+  const listHtml = (title, items) => {
+    const safeItems = (Array.isArray(items) ? items : [])
+      .map(item => `<li>${escapeHtml(item)}</li>`)
+      .join('');
+    return `<div class="rubric-list"><h4>${title}</h4><ul>${safeItems || '<li>暂无明确条目</li>'}</ul></div>`;
   };
-  let cards = '';
-  for (const [k, c] of Object.entries(acfg)) {
-    const s = aspect_scores[k] || 0;
-    const diffs = (aspect_details[k]?.differences || []).map(l => `<li>${l}</li>`).join('');
-    cards += `<div class="aspect-card">
-      <div class="aspect-top"><span class="aspect-name">${c.name}</span><span class="aspect-score">${s.toFixed(0)}/100</span></div>
-      <div class="aspect-bar"><div class="aspect-bar-fill ${c.cls}" style="width:${s}%;"></div></div>
-      <ul class="aspect-notes">${diffs || '<li>与 O 奖论文水平接近</li>'}</ul></div>`;
-  }
 
-  // Structure flags
+  return `<div class="result-card rubric-card">
+    <div class="rubric-hero">
+      <div class="rubric-score">
+        <span class="num">${Number(rubric.score || 0).toFixed(0)}</span>
+        <span class="lbl">评分 / 100</span>
+      </div>
+      <div>
+        <div class="rubric-kicker">STRICT RUBRIC</div>
+        <div class="rubric-title">严苛 Rubric 评审 · 预测 ${escapeHtml(rubric.award_prediction || 'S/U')}</div>
+        <div class="rubric-comment">${escapeHtml(rubric.comments || '')}</div>
+      </div>
+    </div>
+    <div class="rubric-grid">${metricHtml}</div>
+    ${renderAwardProbabilities(rubric.probabilities || {})}
+    <div class="rubric-lists">
+      ${listHtml('Strengths', rubric.strengths)}
+      ${listHtml('Weaknesses', rubric.weaknesses)}
+    </div>
+  </div>`;
+}
+
+function renderResults(d) {
+  const metadata = d.metadata || {};
+  const structure = d.structure || {};
+  const rubric = d.llm_rubric || {};
+
   const flags = [
     ['has_abstract','摘要'],['has_introduction','引言'],['has_methodology','方法论'],
     ['has_results','结果分析'],['has_conclusion','结论'],['has_references','参考文献'],
@@ -688,48 +876,37 @@ function renderResults(d) {
     ['has_assumption_justification','假设论证'],['has_model_comparison','模型对比'],
     ['has_error_analysis','误差分析'],['has_dimensional_analysis','量纲分析'],
   ];
-  let flagsHtml = '';
-  for (const [k, lb] of flags) {
+  const flagsHtml = flags.map(([k, lb]) => {
     const ok = structure[k] === true || structure[k] === 1;
-    flagsHtml += `<div class="flag ${ok?'ok':'no'}"><span class="dot"></span>${lb}</div>`;
-  }
+    return `<div class="flag ${ok?'ok':'no'}"><span class="dot"></span>${lb}</div>`;
+  }).join('');
 
-  const r = 48, circ = 2 * Math.PI * r;
+  const evidenceCards = [
+    ['题目识别', `${escapeHtml(d.contest || 'auto')} Problem ${escapeHtml(d.problem || 'auto')} (${escapeHtml(d.year || 'auto')})`],
+    ['摘要词数', `${metadata.abstract_word_count || 0} words`],
+    ['全文词数', `~${((metadata.full_text_word_count || 0) / 1000).toFixed(1)}k`],
+    ['页数', `${metadata.page_count || 0}`],
+    ['图像/图题', `${metadata.image_count || 0} / ${structure.figure_caption_count || 0}`],
+    ['表格', `${structure.table_count || 0}`],
+  ].map(([label, value]) => `<div class="evidence-tile"><div class="evidence-value">${value}</div><div class="evidence-label">${label}</div></div>`).join('');
 
   resultsDiv.innerHTML = `
+    ${renderRubric(rubric)}
     <div class="result-card">
-      <div class="score-hero">
-        <div class="score-ring">
-          <svg width="110" height="110" viewBox="0 0 110 110">
-            <circle class="bg" cx="55" cy="55" r="${r}"/>
-            <circle class="fg" cx="55" cy="55" r="${r}"
-              stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - score/100)}"/>
-          </svg>
-          <div class="val"><span class="num">${score.toFixed(0)}</span><span class="lbl">/ 100</span></div>
-        </div>
-        <div class="score-meta">
-          <h2>${emoji} ${quality_tier}</h2>
-          <span class="tier-tag">最可能: ${awardNames[best]}</span>
-          <div class="info">${contest} Problem ${problem} (${year}) &middot; ${metadata.page_count} 页 &middot; ${metadata.image_count} 张图</div>
-          <div class="info" style="margin-top:4px;">${description}</div>
-        </div>
+      <div class="section-heading">PDF 解析证据</div>
+      <div class="evidence-grid">${evidenceCards}</div>
+      <div class="meta-stats">
+        原始嵌入图: ${metadata.raw_image_count || 0} &middot;
+        可分析图像: ${metadata.filtered_image_count || 0} &middot;
+        公式: ${structure.formula_count || 0} &middot;
+        引用: ${structure.citation_count || 0} 处 &middot;
+        参考文献: ${metadata.ref_count || 0}
       </div>
-      <div class="section-heading">获奖概率分布</div>
-      <div class="award-bars">${probBars}</div>
-      <div class="section-heading" style="margin-top:24px;">三维度对比评分</div>
-      <div class="aspect-grid">${cards}</div>
     </div>
     <div class="result-card">
-      <div class="section-heading">论文结构分析</div>
+      <div class="section-heading">论文结构证据</div>
       <div class="flags-grid">${flagsHtml}</div>
-      <div class="meta-stats">
-        完整度: ${(structure.structure_completeness*100).toFixed(0)}% &middot;
-        公式: ${structure.formula_count||0} &middot;
-        表格: ${structure.table_count||0} &middot;
-        图表: ${structure.figure_caption_count||0} &middot;
-        引用: ${structure.citation_count||0} 处 &middot;
-        总字数: ~${((structure.total_word_count||0)/1000).toFixed(1)}k
-      </div>
+      <div class="meta-stats">完整度: ${((structure.structure_completeness || 0) * 100).toFixed(0)}%</div>
     </div>
   `;
   resultsDiv.classList.add('active');
