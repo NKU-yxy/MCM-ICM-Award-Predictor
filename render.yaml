@@ -15,7 +15,9 @@ services:
       - key: DEEPSEEK_MAX_TOKENS
         value: "1500"
       - key: DEEPSEEK_TIMEOUT
-        value: "45"
+        value: "90"
+      - key: PDF_MAX_IMAGES
+        value: "10"
       - key: TRUST_PROXY_HEADERS
         value: "1"
       - key: REQUIRE_HTTPS

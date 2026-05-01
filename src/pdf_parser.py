@@ -25,7 +25,7 @@ class PDFParser:
         self.config = load_config(config_path)
         self.pdf_config = self.config['pdf_parser']
         self.min_image_size = self.pdf_config['min_image_size']
-        self.max_images = self.pdf_config['max_images_per_paper']
+        self.max_images = int(os.environ.get("PDF_MAX_IMAGES", self.pdf_config['max_images_per_paper']))
         self.render_vector_figures = bool(self.pdf_config.get('render_vector_figures', False))
         self.max_image_pixels = int(self.pdf_config.get('max_image_pixels', 8000000))
         self.abstract_keywords = self.pdf_config['abstract_keywords']
