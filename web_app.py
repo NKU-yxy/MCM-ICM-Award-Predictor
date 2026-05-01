@@ -413,7 +413,8 @@ async def predict(
         ref_count = int(metadata.get("ref_count", 0) or 0)
         raw_image_count = int(metadata.get("raw_image_count", 0) or 0)
         figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
-        display_image_count = max(len(images), raw_image_count, figure_caption_count)
+        filtered_image_count = len(images)
+        display_image_count = max(filtered_image_count, raw_image_count, figure_caption_count)
         # 释放原始图片内存，避免大 PDF 解析后 OOM（统计已提取完毕）
         del images
         import gc; gc.collect()
@@ -462,7 +463,7 @@ async def predict(
             "abstract_word_count": len(abstract.split()),
             "full_text_word_count": len(full_text.split()),
             "image_count": display_image_count,
-            "filtered_image_count": len(images),
+            "filtered_image_count": filtered_image_count,
             "raw_image_count": raw_image_count,
             "page_count": page_count,
             "ref_count": ref_count,
