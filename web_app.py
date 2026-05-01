@@ -415,9 +415,8 @@ async def predict(
         figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
         filtered_image_count = len(images)
         display_image_count = max(filtered_image_count, raw_image_count, figure_caption_count)
-        # 释放原始图片内存，避免大 PDF 解析后 OOM（统计已提取完毕）
+        # 释放原始图片内存（PIL Image 无循环引用，del 后引用计数立即回收）
         del images
-        import gc; gc.collect()
 
         # 截断全文以降低内存压力（LLM 评分仅使用前 ~18k 字符的证据片段）
         full_text = full_text[:100000] if len(full_text) > 100000 else full_text
