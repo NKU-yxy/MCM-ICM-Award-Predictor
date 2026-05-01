@@ -696,6 +696,7 @@ function drawAwardChart(counts) {
 }
 
 loadStats();
+setInterval(loadStats, 10000); // 每 10 秒自动刷新统计数据
 
 // ==========================================================================
 // File selection

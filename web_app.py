@@ -112,7 +112,7 @@ def _save_stats():
 
 
 def record_prediction(score: float, problem: str, best_award: str):
-    """线程安全地记录一次预测"""
+    """线程安全地记录一次预测，立即持久化到磁盘。"""
     best_award = "S" if best_award in {"S/U", "U"} else best_award
     with _stats_lock:
         _usage_stats["total_predictions"] += 1
@@ -130,8 +130,7 @@ def record_prediction(score: float, problem: str, best_award: str):
         })
         if len(_usage_stats["recent_scores"]) > 50:
             _usage_stats["recent_scores"] = _usage_stats["recent_scores"][-50:]
-    # 异步持久化（每 10 次保存一次，减少 I/O）
-    if _usage_stats["total_predictions"] % 10 == 0:
+        # 每次预测立即落盘，确保服务重启/崩溃后数据不丢失
         _save_stats()
 
 
