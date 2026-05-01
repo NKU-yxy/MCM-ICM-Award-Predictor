@@ -409,6 +409,9 @@ async def predict(
             "MCM" if str(problem_detected).upper() in {"A", "B", "C"} else "ICM",
         )
         image_result = image_extractor.extract(images)
+        # 立即释放原始图片内存，避免大 PDF 解析后 OOM
+        images = None
+        import gc; gc.collect()
         page_count = int(metadata.get("page_count", 0) or 0)
         ref_count = int(metadata.get("ref_count", 0) or 0)
         raw_image_count = int(metadata.get("raw_image_count", 0) or 0)

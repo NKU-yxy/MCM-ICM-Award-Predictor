@@ -7,8 +7,8 @@ data:
 
 pdf_parser:
   min_image_size: 50
-  max_images_per_paper: 20
-  max_image_pixels: 8000000
+  max_images_per_paper: 5
+  max_image_pixels: 2000000
   render_vector_figures: false
   abstract_keywords: ["Abstract", "ABSTRACT", "Summary", "SUMMARY"]
   intro_keywords: ["Introduction", "INTRODUCTION", "1.", "1 "]
