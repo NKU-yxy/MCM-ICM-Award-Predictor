@@ -409,14 +409,14 @@ async def predict(
             "MCM" if str(problem_detected).upper() in {"A", "B", "C"} else "ICM",
         )
         image_result = image_extractor.extract(images)
-        # 立即释放原始图片内存，避免大 PDF 解析后 OOM
-        images = None
-        import gc; gc.collect()
         page_count = int(metadata.get("page_count", 0) or 0)
         ref_count = int(metadata.get("ref_count", 0) or 0)
         raw_image_count = int(metadata.get("raw_image_count", 0) or 0)
         figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
         display_image_count = max(len(images), raw_image_count, figure_caption_count)
+        # 释放原始图片内存，避免大 PDF 解析后 OOM（统计已提取完毕）
+        del images
+        import gc; gc.collect()
 
         # 截断全文以降低内存压力（LLM 评分仅使用前 ~18k 字符的证据片段）
         full_text = full_text[:100000] if len(full_text) > 100000 else full_text
