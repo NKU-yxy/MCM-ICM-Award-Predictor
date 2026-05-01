@@ -75,8 +75,8 @@ _image_extractor: ImageFeatureExtractor | None = None
 _rubric_scorer: DeepSeekRubricScorer | None = None
 _problem_detector: ProblemDetector | None = None
 
-# Usage statistics (in-memory, resets on restart)
-STATS_FILE = Path(__file__).parent / "data" / "usage_stats_deepseek.json"
+# Usage statistics — 优先使用 Render Disk 持久化路径
+STATS_FILE = Path(os.environ.get("RENDER_DISK_PATH", str(Path(__file__).parent / "data"))) / "usage_stats.json"
 _stats_lock = threading.Lock()
 _usage_stats: dict = {
     "total_predictions": 0,
