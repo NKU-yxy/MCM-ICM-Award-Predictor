@@ -102,11 +102,11 @@ def _load_stats():
         pass
 
 
-def _save_stats():
-    """持久化统计到磁盘"""
+def _write_stats_to_disk(stats_copy: dict):
+    """将统计写入磁盘（无锁，仅供异步调用）"""
     try:
         STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATS_FILE.write_text(json.dumps(_usage_stats, ensure_ascii=False, indent=2), "utf-8")
+        STATS_FILE.write_text(json.dumps(stats_copy, ensure_ascii=False, indent=2), "utf-8")
     except Exception:
         pass
 
@@ -130,8 +130,16 @@ def record_prediction(score: float, problem: str, best_award: str):
         })
         if len(_usage_stats["recent_scores"]) > 50:
             _usage_stats["recent_scores"] = _usage_stats["recent_scores"][-50:]
-        # 每次预测立即落盘，确保服务重启/崩溃后数据不丢失
-        _save_stats()
+        # 拷贝快照，释放锁后再写盘，避免 I/O 阻塞事件循环
+        stats_snapshot = {
+            "total_predictions": _usage_stats["total_predictions"],
+            "today_predictions": _usage_stats["today_predictions"],
+            "today_date": _usage_stats["today_date"],
+            "award_counts": dict(_usage_stats["award_counts"]),
+            "recent_scores": list(_usage_stats["recent_scores"]),
+        }
+    # 锁外写盘，不阻塞 stats 查询
+    _write_stats_to_disk(stats_snapshot)
 
 
 def public_rubric_payload(rubric: dict) -> dict:
