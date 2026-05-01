@@ -416,6 +416,9 @@ async def predict(
         figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
         display_image_count = max(len(images), raw_image_count, figure_caption_count)
 
+        # 截断全文以降低内存压力（LLM 评分仅使用前 ~18k 字符的证据片段）
+        full_text = full_text[:100000] if len(full_text) > 100000 else full_text
+
         llm_rubric = rubric_scorer.score(
             abstract=abstract,
             full_text=full_text,

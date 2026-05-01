@@ -751,14 +751,23 @@ submitBtn.addEventListener('click', async () => {
   fd.append('year', 'auto');
 
   try {
-    const r = await fetch('/api/predict', { method: 'POST', body: fd });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000); // 120 秒超时
+    const r = await fetch('/api/predict', { method: 'POST', body: fd, signal: ctrl.signal });
+    clearTimeout(timer);
     if (r.status === 429) { const d = await r.json(); showError(d.detail || '请求过于频繁'); return; }
     const d = await r.json();
     if (!r.ok || !d.success) { showError(d.detail || '预测失败'); return; }
     renderResults(d);
     resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    loadStats(); // refresh stats after prediction
-  } catch (e) { showError('网络错误：无法连接到服务器'); }
+    loadStats();
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      showError('请求超时（超过 120 秒）。Render 免费计划 CPU 较慢，大文件建议拆分或重试。');
+    } else {
+      showError('网络错误：无法连接到服务器，请检查网络后重试');
+    }
+  }
   finally { loadingOverlay.classList.remove('active'); submitBtn.disabled = false; }
 });
 
