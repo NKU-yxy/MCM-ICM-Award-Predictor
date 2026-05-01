@@ -328,8 +328,8 @@ class DeepSeekRubricScorer:
 
     @staticmethod
     def _probabilities_from_score(score: int) -> Dict[str, int]:
-        centers = {"O": 94, "F": 86, "M": 77, "H": 66, "S": 48}
-        scales = {"O": 5.5, "F": 6.5, "M": 8.0, "H": 8.0, "S": 10.0}
+        centers = {"O": 95, "F": 88, "M": 80, "H": 65, "S": 42}
+        scales = {"O": 5.0, "F": 6.0, "M": 7.0, "H": 9.0, "S": 12.0}
         weights = {
             key: math.exp(-0.5 * ((score - centers[key]) / scales[key]) ** 2)
             for key in AWARD_KEYS
@@ -347,9 +347,9 @@ class DeepSeekRubricScorer:
     def _award_from_score(score: int) -> str:
         if score >= 90:
             return "O"
-        if score >= 84:
+        if score >= 82:
             return "F"
-        if score >= 74:
+        if score >= 70:
             return "M"
         if score >= 60:
             return "H"
