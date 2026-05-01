@@ -76,7 +76,9 @@ _rubric_scorer: DeepSeekRubricScorer | None = None
 _problem_detector: ProblemDetector | None = None
 
 # Usage statistics — 优先使用 Render Disk 持久化路径
-STATS_FILE = Path(os.environ.get("RENDER_DISK_PATH", str(Path(__file__).parent / "data"))) / "usage_stats.json"
+STATS_DIR = Path(os.environ.get("RENDER_DISK_PATH", str(Path(__file__).parent / "data")))
+STATS_FILE = STATS_DIR / "usage_stats.json"
+PREDICTIONS_LOG = STATS_DIR / "predictions.jsonl"  # 每行一条完整预测结果
 _stats_lock = threading.Lock()
 _usage_stats: dict = {
     "total_predictions": 0,
@@ -105,8 +107,19 @@ def _load_stats():
 def _write_stats_to_disk(stats_copy: dict):
     """将统计写入磁盘（无锁，仅供异步调用）"""
     try:
-        STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATS_DIR.mkdir(parents=True, exist_ok=True)
         STATS_FILE.write_text(json.dumps(stats_copy, ensure_ascii=False, indent=2), "utf-8")
+    except Exception:
+        pass
+
+
+def _save_prediction_result(result: dict):
+    """追加一条完整预测结果到 JSONL 日志（无锁，异步安全）"""
+    try:
+        STATS_DIR.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(result, ensure_ascii=False) + "\n"
+        with open(PREDICTIONS_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
     except Exception:
         pass
 
@@ -452,6 +465,29 @@ async def predict(
         str(problem_detected or "?"),
         str(llm_rubric.get("award_prediction", "S/U")),
     )
+    # 持久化完整预测结果到 Disk（JSONL 追加，供后续分析）
+    _save_prediction_result({
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "problem": problem_detected,
+        "contest": contest_detected,
+        "year": year_detected,
+        "score": llm_rubric.get("score"),
+        "award_prediction": llm_rubric.get("award_prediction"),
+        "probabilities": llm_rubric.get("probabilities"),
+        "details": llm_rubric.get("details"),
+        "strengths": llm_rubric.get("strengths"),
+        "weaknesses": llm_rubric.get("weaknesses"),
+        "metadata": {
+            "abstract_word_count": len(abstract.split()),
+            "full_text_word_count": len(full_text.split()),
+            "page_count": page_count,
+            "image_count": display_image_count,
+            "ref_count": ref_count,
+            "structure_completeness": structure.get("structure_completeness"),
+            "has_sensitivity_analysis": structure.get("has_sensitivity_analysis"),
+            "has_model_validation": structure.get("has_model_validation"),
+        },
+    })
 
     # ---- 9. 返回结果 ----
     return JSONResponse({
