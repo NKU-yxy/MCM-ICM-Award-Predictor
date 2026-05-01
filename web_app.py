@@ -486,6 +486,18 @@ async def startup():
     """初始化轻量组件"""
     _load_stats()
     logger.info(f"已加载统计: {_usage_stats['total_predictions']} 次历史预测")
+
+    # 生产环境启动检查
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        logger.warning("!!! 未设置 DEEPSEEK_API_KEY 环境变量 — AI 评分将不可用 !!!")
+    else:
+        logger.info(f"DeepSeek API Key 已配置 ({api_key[:8]}***)")
+
+    default_hosts = {"127.0.0.1", "localhost", "testserver"}
+    if set(ALLOWED_HOSTS) == default_hosts:
+        logger.warning("ALLOWED_HOSTS 使用默认值，生产环境请设置为你的 Render 域名")
+
     logger.info("服务启动，使用 AI 作为主评审...")
     get_evaluators()
     # 清理旧临时文件

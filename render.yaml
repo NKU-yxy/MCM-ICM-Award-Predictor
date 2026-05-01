@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: mcm-icm-award-predictor
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DEEPSEEK_MODEL
+        value: deepseek-v4-flash
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: LLM_RUBRIC_ENABLED
+        value: "1"
+      - key: DEEPSEEK_MAX_TOKENS
+        value: "1500"
+      - key: DEEPSEEK_TIMEOUT
+        value: "45"
+      - key: TRUST_PROXY_HEADERS
+        value: "1"
+      - key: REQUIRE_HTTPS
+        value: "1"
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: ALLOWED_HOSTS
+        sync: false

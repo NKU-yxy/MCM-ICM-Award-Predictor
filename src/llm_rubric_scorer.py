@@ -47,8 +47,8 @@ class DeepSeekRubricScorer:
 
     @staticmethod
     def _default_prompt_path() -> Path:
-        # src/llm_rubric_scorer.py -> project dir -> workspace root.
-        return Path(__file__).resolve().parents[2] / "改进后prompt.txt"
+        # src/llm_rubric_scorer.py -> project root
+        return Path(__file__).resolve().parents[1] / "改进后prompt.txt"
 
     def unavailable(self, reason: str) -> Dict[str, Any]:
         return {
