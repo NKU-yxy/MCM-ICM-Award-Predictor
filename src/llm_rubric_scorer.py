@@ -194,20 +194,21 @@ class DeepSeekRubricScorer:
             return "无可用全文文本"
 
         chunks = []
-        chunks.append(text[:6000])
+        chunks.append(text[:12000])
 
         for pattern in [
-            r"(?is)\bSensitivity\s+Analysis\b.{0,3000}",
-            r"(?is)\b(Model\s+Validation|Validation|Testing)\b.{0,2500}",
-            r"(?is)\b(Strengths?\s+and\s+Weaknesses?|Weaknesses?|Limitations?)\b.{0,2500}",
-            r"(?is)\bConclusion\b.{0,3000}",
+            r"(?is)\bSensitivity\s+Analysis\b.{0,5000}",
+            r"(?is)\b(Model\s+Validation|Validation|Testing)\b.{0,4000}",
+            r"(?is)\b(Strengths?\s+and\s+Weaknesses?|Weaknesses?|Limitations?)\b.{0,4000}",
+            r"(?is)\bConclusion\b.{0,5000}",
+            r"(?is)\b(Methodology|Method|Approach|Model)\b.{0,4000}",
         ]:
             match = re.search(pattern, text)
             if match:
                 chunks.append(match.group(0))
 
         evidence = "\n\n---\n\n".join(chunks)
-        return evidence[:18000]
+        return evidence[:35000]
 
     @staticmethod
     def _caption_evidence(full_text: str) -> str:
@@ -216,7 +217,7 @@ class DeepSeekRubricScorer:
             r"(?mi)^\s*((?:fig\.?|figure|tab\.?|table)\s+\d+[\s.:：-].{0,180})",
             text,
         )
-        cleaned = [re.sub(r"\s+", " ", item).strip() for item in matches[:30]]
+        cleaned = [re.sub(r"\s+", " ", item).strip() for item in matches[:50]]
         return "\n".join(cleaned) if cleaned else "未提取到明确 Figure/Table 标题"
 
     @staticmethod

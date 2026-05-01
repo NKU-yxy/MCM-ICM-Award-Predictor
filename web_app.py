@@ -426,9 +426,6 @@ async def predict(
         # 释放原始图片内存（PIL Image 无循环引用，del 后引用计数立即回收）
         del images
 
-        # 截断全文以降低内存压力（LLM 评分仅使用前 ~18k 字符的证据片段）
-        full_text = full_text[:100000] if len(full_text) > 100000 else full_text
-
         llm_rubric = rubric_scorer.score(
             abstract=abstract,
             full_text=full_text,

@@ -2,7 +2,7 @@ services:
   - type: web
     name: mcm-icm-award-predictor
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
     disk:
@@ -19,11 +19,11 @@ services:
       - key: LLM_RUBRIC_ENABLED
         value: "1"
       - key: DEEPSEEK_MAX_TOKENS
-        value: "1500"
+        value: "3000"
       - key: DEEPSEEK_TIMEOUT
-        value: "120"
+        value: "180"
       - key: PDF_MAX_IMAGES
-        value: "3"
+        value: "12"
       - key: TRUST_PROXY_HEADERS
         value: "1"
       - key: REQUIRE_HTTPS
