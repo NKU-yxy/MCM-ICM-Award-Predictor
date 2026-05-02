@@ -40,6 +40,7 @@ from src.pdf_parser import PDFParser
 from src.image_features import ImageFeatureExtractor
 from src.llm_rubric_scorer import DeepSeekRubricScorer
 from src.problem_detector import ProblemDetector
+from src.award_calibrator import AWARD_KEYS, CALIBRATION_VERSION, calibrate_rubric_award
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger("mcm-web")
@@ -80,28 +81,273 @@ STATS_DIR = Path(os.environ.get("RENDER_DISK_PATH", str(Path(__file__).parent / 
 STATS_FILE = STATS_DIR / "usage_stats.json"
 PREDICTIONS_LOG = STATS_DIR / "predictions.jsonl"  # 每行一条完整预测结果
 _stats_lock = threading.Lock()
-_usage_stats: dict = {
-    "total_predictions": 0,
-    "today_predictions": 0,
-    "today_date": str(date.today()),
-    "award_counts": {"O": 0, "F": 0, "M": 0, "H": 0, "S": 0},
-    "recent_scores": [],  # [{score, problem, timestamp}, ...] max 50
-}
+def _empty_award_counts() -> dict[str, int]:
+    return {award: 0 for award in AWARD_KEYS}
+
+
+def _default_usage_stats() -> dict:
+    return {
+        "total_predictions": 0,
+        "today_predictions": 0,
+        "today_date": str(date.today()),
+        "legacy_award_counts": _empty_award_counts(),
+        "current_version_award_counts": _empty_award_counts(),
+        "recent_scores": [],  # [{score, problem, timestamp}, ...] max 50
+        "calibration_version": CALIBRATION_VERSION,
+        "imported_legacy_sources": [],
+    }
+
+
+_usage_stats: dict = _default_usage_stats()
+
+
+def _normalize_award(award: str) -> str:
+    award = str(award or "S").upper().strip()
+    if award in {"S/U", "U", "SUCCESSFUL PARTICIPANT"}:
+        return "S"
+    return award if award in AWARD_KEYS else "S"
+
+
+def _coerce_award_counts(value) -> dict[str, int]:
+    counts = _empty_award_counts()
+    if not isinstance(value, dict):
+        return counts
+    for key, raw_count in value.items():
+        award = _normalize_award(key)
+        try:
+            count = int(float(raw_count))
+        except (TypeError, ValueError):
+            count = 0
+        counts[award] += max(count, 0)
+    return counts
+
+
+def _merge_award_counts(base: dict, incoming: dict) -> dict[str, int]:
+    merged = _coerce_award_counts(base)
+    for award, count in _coerce_award_counts(incoming).items():
+        merged[award] += count
+    return merged
+
+
+def _combined_award_counts(stats: dict) -> dict[str, int]:
+    return _merge_award_counts(
+        stats.get("legacy_award_counts", {}),
+        stats.get("current_version_award_counts", {}),
+    )
+
+
+def _source_signature(path: Path) -> str:
+    # Use the stable filename, not mtime/size, so a touched legacy file cannot
+    # be imported again and inflate totals after a redeploy.
+    return path.name
+
+
+def _int_value(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _recent_scores(value) -> list:
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value[-50:]:
+        if isinstance(item, dict):
+            cleaned.append(item)
+    return cleaned
+
+
+def _migrate_saved_stats(saved: dict) -> dict:
+    stats = _default_usage_stats()
+    if not isinstance(saved, dict):
+        return stats
+
+    stats["total_predictions"] = max(_int_value(saved.get("total_predictions")), 0)
+    stats["today_predictions"] = max(_int_value(saved.get("today_predictions")), 0)
+    stats["today_date"] = str(saved.get("today_date") or date.today())
+    stats["recent_scores"] = _recent_scores(saved.get("recent_scores"))
+    stats["imported_legacy_sources"] = list(saved.get("imported_legacy_sources") or [])
+
+    if saved.get("calibration_version") == CALIBRATION_VERSION:
+        stats["legacy_award_counts"] = _coerce_award_counts(saved.get("legacy_award_counts"))
+        stats["current_version_award_counts"] = _coerce_award_counts(
+            saved.get("current_version_award_counts")
+        )
+    else:
+        # Pre-calibration files only had award_counts; freeze them as legacy.
+        stats["legacy_award_counts"] = _coerce_award_counts(saved.get("award_counts"))
+        stats["current_version_award_counts"] = _empty_award_counts()
+        stats["imported_legacy_sources"].append(f"primary:{_source_signature(STATS_FILE)}")
+
+    if stats["today_date"] != str(date.today()):
+        stats["today_predictions"] = 0
+        stats["today_date"] = str(date.today())
+    stats["imported_legacy_sources"] = sorted(set(stats["imported_legacy_sources"]))
+    return stats
+
+
+def _legacy_counts_from_stats_file(path: Path) -> tuple[int, dict[str, int], list]:
+    saved = json.loads(path.read_text("utf-8"))
+    if not isinstance(saved, dict):
+        return 0, _empty_award_counts(), []
+
+    total = max(_int_value(saved.get("total_predictions")), 0)
+    if saved.get("calibration_version") == CALIBRATION_VERSION:
+        counts = _merge_award_counts(
+            saved.get("legacy_award_counts", {}),
+            saved.get("current_version_award_counts", {}),
+        )
+    else:
+        counts = _coerce_award_counts(saved.get("award_counts"))
+    return total, counts, _recent_scores(saved.get("recent_scores"))
+
+
+def _legacy_counts_from_jsonl(path: Path) -> tuple[int, dict[str, int], list]:
+    total = 0
+    counts = _empty_award_counts()
+    recent = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            total += 1
+            counts[_normalize_award(row.get("award_prediction"))] += 1
+            recent.append(
+                {
+                    "score": row.get("score", 0),
+                    "problem": row.get("problem", "?"),
+                    "timestamp": str(row.get("timestamp", ""))[:16],
+                }
+            )
+    return total, counts, recent[-50:]
+
+
+def _legacy_counts_from_text(path: Path) -> tuple[int, dict[str, int], list]:
+    text = path.read_text("utf-8", errors="ignore")
+    counts = _empty_award_counts()
+    for award in AWARD_KEYS:
+        match = re.search(rf"(?<![A-Za-z]){award}\s*[:=：]\s*(\d+)", text)
+        if match:
+            counts[award] = int(match.group(1))
+
+    total_patterns = [
+        r"total_predictions\s*[:=：]\s*(\d+)",
+        r"total\s*[:=：]\s*(\d+)",
+        r"累计预测(?:次数)?\s*[:=：]?\s*(\d+)",
+    ]
+    total = 0
+    for pattern in total_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            total = int(match.group(1))
+            break
+    if total <= 0:
+        total = sum(counts.values())
+    return total, counts, []
+
+
+def _import_legacy_stats():
+    """Import old aggregate stats once, freezing them as legacy distribution."""
+    imported = set(_usage_stats.get("imported_legacy_sources") or [])
+    imported_any_json = False
+
+    for path in sorted(STATS_DIR.glob("usage_stats*.json")):
+        if path.resolve() == STATS_FILE.resolve():
+            continue
+        signature = _source_signature(path)
+        if signature in imported:
+            continue
+        try:
+            total, counts, recent = _legacy_counts_from_stats_file(path)
+        except Exception as exc:
+            logger.warning("跳过无法导入的旧统计文件 %s: %s", path.name, exc)
+            continue
+        if total <= 0 and not any(counts.values()):
+            continue
+        _usage_stats["total_predictions"] += total
+        _usage_stats["legacy_award_counts"] = _merge_award_counts(
+            _usage_stats.get("legacy_award_counts", {}),
+            counts,
+        )
+        _usage_stats["recent_scores"].extend(recent)
+        imported.add(signature)
+        imported_any_json = True
+        logger.info("已导入旧统计文件 %s: %s 次预测", path.name, total)
+
+    for pattern in ("usage_stats*.txt", "usage_stats*.md"):
+        for path in sorted(STATS_DIR.glob(pattern)):
+            signature = _source_signature(path)
+            if signature in imported:
+                continue
+            try:
+                total, counts, recent = _legacy_counts_from_text(path)
+            except Exception as exc:
+                logger.warning("跳过无法导入的旧文本统计 %s: %s", path.name, exc)
+                continue
+            if total <= 0 and not any(counts.values()):
+                continue
+            _usage_stats["total_predictions"] += total
+            _usage_stats["legacy_award_counts"] = _merge_award_counts(
+                _usage_stats.get("legacy_award_counts", {}),
+                counts,
+            )
+            _usage_stats["recent_scores"].extend(recent)
+            imported.add(signature)
+            logger.info("已导入旧文本统计 %s: %s 次预测", path.name, total)
+
+    # Avoid double counting the regular predictions.jsonl when aggregate JSON
+    # files already exist. It is only used as a fallback for deployments that
+    # lost usage_stats.json but retained a per-request legacy log.
+    jsonl_candidates = sorted(STATS_DIR.glob("*.jsonl"))
+    for path in jsonl_candidates:
+        if path.resolve() == PREDICTIONS_LOG.resolve() and (
+            imported_any_json or _usage_stats["total_predictions"] > 0
+        ):
+            continue
+        signature = _source_signature(path)
+        if signature in imported:
+            continue
+        try:
+            total, counts, recent = _legacy_counts_from_jsonl(path)
+        except Exception as exc:
+            logger.warning("跳过无法导入的旧预测日志 %s: %s", path.name, exc)
+            continue
+        if total <= 0:
+            continue
+        _usage_stats["total_predictions"] += total
+        _usage_stats["legacy_award_counts"] = _merge_award_counts(
+            _usage_stats.get("legacy_award_counts", {}),
+            counts,
+        )
+        _usage_stats["recent_scores"].extend(recent)
+        imported.add(signature)
+        logger.info("已导入旧预测日志 %s: %s 次预测", path.name, total)
+
+    _usage_stats["recent_scores"] = _recent_scores(_usage_stats.get("recent_scores"))
+    _usage_stats["imported_legacy_sources"] = sorted(imported)
 
 
 def _load_stats():
-    """从磁盘加载持久化统计"""
+    """从磁盘加载持久化统计，并一次性合并旧版本统计。"""
     global _usage_stats
     try:
         if STATS_FILE.exists():
             saved = json.loads(STATS_FILE.read_text("utf-8"))
-            _usage_stats.update(saved)
-            # 检查日期
-            if _usage_stats.get("today_date") != str(date.today()):
-                _usage_stats["today_predictions"] = 0
-                _usage_stats["today_date"] = str(date.today())
-    except Exception:
-        pass
+            _usage_stats = _migrate_saved_stats(saved)
+        else:
+            _usage_stats = _default_usage_stats()
+        _import_legacy_stats()
+        _write_stats_to_disk(_stats_snapshot())
+    except Exception as exc:
+        logger.warning("统计加载失败，使用空统计: %s", exc)
+        _usage_stats = _default_usage_stats()
 
 
 def _write_stats_to_disk(stats_copy: dict):
@@ -124,9 +370,25 @@ def _save_prediction_result(result: dict):
         pass
 
 
+def _stats_snapshot() -> dict:
+    return {
+        "total_predictions": _usage_stats["total_predictions"],
+        "today_predictions": _usage_stats["today_predictions"],
+        "today_date": _usage_stats["today_date"],
+        "legacy_award_counts": _coerce_award_counts(_usage_stats.get("legacy_award_counts")),
+        "current_version_award_counts": _coerce_award_counts(
+            _usage_stats.get("current_version_award_counts")
+        ),
+        "award_counts": _combined_award_counts(_usage_stats),
+        "recent_scores": _recent_scores(_usage_stats.get("recent_scores")),
+        "calibration_version": CALIBRATION_VERSION,
+        "imported_legacy_sources": list(_usage_stats.get("imported_legacy_sources") or []),
+    }
+
+
 def record_prediction(score: float, problem: str, best_award: str):
     """线程安全地记录一次预测，立即持久化到磁盘。"""
-    best_award = "S" if best_award in {"S/U", "U"} else best_award
+    best_award = _normalize_award(best_award)
     with _stats_lock:
         _usage_stats["total_predictions"] += 1
         if _usage_stats.get("today_date") == str(date.today()):
@@ -134,8 +396,9 @@ def record_prediction(score: float, problem: str, best_award: str):
         else:
             _usage_stats["today_predictions"] = 1
             _usage_stats["today_date"] = str(date.today())
-        if best_award in _usage_stats["award_counts"]:
-            _usage_stats["award_counts"][best_award] += 1
+        current_counts = _coerce_award_counts(_usage_stats.get("current_version_award_counts"))
+        current_counts[best_award] += 1
+        _usage_stats["current_version_award_counts"] = current_counts
         _usage_stats["recent_scores"].append({
             "score": round(score, 1),
             "problem": problem,
@@ -144,13 +407,7 @@ def record_prediction(score: float, problem: str, best_award: str):
         if len(_usage_stats["recent_scores"]) > 50:
             _usage_stats["recent_scores"] = _usage_stats["recent_scores"][-50:]
         # 拷贝快照，释放锁后再写盘，避免 I/O 阻塞事件循环
-        stats_snapshot = {
-            "total_predictions": _usage_stats["total_predictions"],
-            "today_predictions": _usage_stats["today_predictions"],
-            "today_date": _usage_stats["today_date"],
-            "award_counts": dict(_usage_stats["award_counts"]),
-            "recent_scores": list(_usage_stats["recent_scores"]),
-        }
+        stats_snapshot = _stats_snapshot()
     # 锁外写盘，不阻塞 stats 查询
     _write_stats_to_disk(stats_snapshot)
 
@@ -163,6 +420,11 @@ def public_rubric_payload(rubric: dict) -> dict:
         "details",
         "award_prediction",
         "probabilities",
+        "raw_award_prediction",
+        "raw_probabilities",
+        "calibrated_score",
+        "calibration_version",
+        "calibration_note",
         "strengths",
         "weaknesses",
         "comments",
@@ -331,11 +593,16 @@ async def health():
 async def stats():
     """返回使用统计"""
     with _stats_lock:
+        legacy_counts = _coerce_award_counts(_usage_stats.get("legacy_award_counts"))
+        current_counts = _coerce_award_counts(_usage_stats.get("current_version_award_counts"))
         return {
             "total_predictions": _usage_stats["total_predictions"],
             "today_predictions": _usage_stats["today_predictions"],
-            "award_counts": dict(_usage_stats["award_counts"]),
-            "recent_scores": list(_usage_stats["recent_scores"]),
+            "legacy_award_counts": legacy_counts,
+            "current_version_award_counts": current_counts,
+            "award_counts": _merge_award_counts(legacy_counts, current_counts),
+            "recent_scores": _recent_scores(_usage_stats.get("recent_scores")),
+            "calibration_version": CALIBRATION_VERSION,
         }
 
 
@@ -451,6 +718,16 @@ async def predict(
             contest=contest_detected,
             year=year_detected,
         )
+        calibration_metadata = {
+            "page_count": page_count,
+            "image_count": display_image_count,
+            "ref_count": ref_count,
+        }
+        llm_rubric = calibrate_rubric_award(
+            llm_rubric,
+            metadata=calibration_metadata,
+            structure=structure,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -461,7 +738,7 @@ async def predict(
 
     # ---- 8. 记录统计 ----
     record_prediction(
-        float(llm_rubric.get("score", 0)),
+        float(llm_rubric.get("calibrated_score", llm_rubric.get("score", 0))),
         str(problem_detected or "?"),
         str(llm_rubric.get("award_prediction", "S/U")),
     )
@@ -472,8 +749,13 @@ async def predict(
         "contest": contest_detected,
         "year": year_detected,
         "score": llm_rubric.get("score"),
+        "calibrated_score": llm_rubric.get("calibrated_score"),
         "award_prediction": llm_rubric.get("award_prediction"),
         "probabilities": llm_rubric.get("probabilities"),
+        "raw_award_prediction": llm_rubric.get("raw_award_prediction"),
+        "raw_probabilities": llm_rubric.get("raw_probabilities"),
+        "calibration_version": llm_rubric.get("calibration_version"),
+        "calibration_note": llm_rubric.get("calibration_note"),
         "details": llm_rubric.get("details"),
         "strengths": llm_rubric.get("strengths"),
         "weaknesses": llm_rubric.get("weaknesses"),

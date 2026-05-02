@@ -454,7 +454,7 @@ body::before {
 /* ---- Stats dashboard ---- */
 .stats-dashboard {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 18px;
   margin-top: 18px;
 }
@@ -470,6 +470,12 @@ body::before {
 .chart-card h4 {
   font-family: 'Playfair Display', serif;
   font-size: .95rem; margin-bottom: 12px;
+}
+.chart-card .chart-note {
+  color: var(--text-muted);
+  font-size: .74rem;
+  margin-top: -7px;
+  margin-bottom: 10px;
 }
 .chart-card svg { width: 100%; height: auto; }
 .chart-card .axis-label {
@@ -511,6 +517,7 @@ body::before {
   <header class="header">
     <h1>MCM / ICM <span class="accent">Award</span> Reviewer</h1>
     <p class="subtitle">上传论文 PDF  &middot;  严苛评审  &middot;  O 奖特征对照</p>
+    <p class="subtitle">已更新为更科学的校准预测方式，结果可能比旧版更严格。</p>
   </header>
 
   <!-- Stats Banner -->
@@ -572,8 +579,14 @@ body::before {
       <svg id="scoreChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div class="chart-card">
-      <h4>奖项判断分布</h4>
-      <svg id="awardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
+      <h4>旧版本奖项判断分布</h4>
+      <div class="chart-note">部署前历史统计，保留旧版口径</div>
+      <svg id="oldAwardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="chart-card">
+      <h4>新版校准后奖项判断分布</h4>
+      <div class="chart-note">仅统计本次更新后的校准预测</div>
+      <svg id="newAwardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
   </div>
 
@@ -619,15 +632,21 @@ async function loadStats() {
     $('statToday').textContent = d.today_predictions.toLocaleString();
 
     // Top award
-    const ac = d.award_counts;
+    const currentCounts = d.current_version_award_counts || {};
+    const legacyCounts = d.legacy_award_counts || {};
+    const combinedCounts = d.award_counts || {};
+    const ac = Object.values(currentCounts).some(v => Number(v) > 0) ? currentCounts : combinedCounts;
     let top = '—', max = 0;
     for (const [k, v] of Object.entries(ac)) { if (v > max) { max = v; top = k; } }
     $('statTop').textContent = max > 0 ? top : '—';
 
     // Charts
     drawScoreChart(d.recent_scores || []);
-    drawAwardChart(d.award_counts || {});
-    if (d.total_predictions > 0) { $('statsDashboard').style.display = 'grid'; }
+    drawAwardChart('oldAwardChart', legacyCounts);
+    drawAwardChart('newAwardChart', currentCounts);
+    if (d.total_predictions > 0 || Object.values(currentCounts).some(v => Number(v) > 0)) {
+      $('statsDashboard').style.display = 'grid';
+    }
   } catch (e) { /* silent */ }
 }
 
@@ -666,8 +685,9 @@ function drawScoreChart(scores) {
   `;
 }
 
-function drawAwardChart(counts) {
-  const svg = $('awardChart');
+function drawAwardChart(svgId, counts) {
+  const svg = $(svgId);
+  counts = counts || {};
   const total = Object.values(counts).reduce((a,b)=>a+b,0);
   if (!total) {
     svg.innerHTML = '<text x="200" y="85" text-anchor="middle" fill="#9b8d78" font-size="13" font-family="DM Sans, sans-serif">暂无数据</text>';
@@ -828,6 +848,9 @@ function renderRubric(rubric) {
   }
 
   const details = rubric.details || {};
+  const calibrationNote = rubric.calibration_note
+    ? `<div class="rubric-status" style="margin-top:12px;">${escapeHtml(rubric.calibration_note)}</div>`
+    : '';
   const metrics = [
     ['content_score', '摘要内容与建模逻辑', 30],
     ['length_style_score', '摘要长度与写作方式', 20],
@@ -861,12 +884,13 @@ function renderRubric(rubric) {
       </div>
       <div>
         <div class="rubric-kicker">STRICT RUBRIC</div>
-        <div class="rubric-title">严苛 Rubric 评审 · 预测 ${escapeHtml(rubric.award_prediction || 'S/U')}</div>
+        <div class="rubric-title">严苛 Rubric 评审 · 校准预测 ${escapeHtml(rubric.award_prediction || 'S/U')}</div>
         <div class="rubric-comment">${escapeHtml(rubric.comments || '')}</div>
       </div>
     </div>
     <div class="rubric-grid">${metricHtml}</div>
     ${renderAwardProbabilities(rubric.probabilities || {})}
+    ${calibrationNote}
     <div class="rubric-lists">
       ${listHtml('Strengths', rubric.strengths)}
       ${listHtml('Weaknesses', rubric.weaknesses)}
