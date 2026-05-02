@@ -1,0 +1,11 @@
+{
+  "total_predictions": 0,
+  "award_counts": {
+    "O": 0,
+    "F": 0,
+    "M": 0,
+    "H": 0,
+    "S": 0
+  },
+  "note": "Copy this file to legacy_stats_seed.json and fill in the old server counts before deploy. The startup importer reads legacy_stats_seed*.json/txt/md once as legacy statistics."
+}

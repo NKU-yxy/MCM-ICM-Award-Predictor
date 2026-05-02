@@ -454,8 +454,8 @@ body::before {
 /* ---- Stats dashboard ---- */
 .stats-dashboard {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 18px;
+  grid-template-columns: 1fr;
+  gap: 22px;
   margin-top: 18px;
 }
 @media (max-width: 640px) { .stats-dashboard { grid-template-columns: 1fr; } }
@@ -464,18 +464,12 @@ body::before {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: 18px 20px;
+  padding: 22px 24px;
   box-shadow: var(--shadow-sm);
 }
 .chart-card h4 {
   font-family: 'Playfair Display', serif;
-  font-size: .95rem; margin-bottom: 12px;
-}
-.chart-card .chart-note {
-  color: var(--text-muted);
-  font-size: .74rem;
-  margin-top: -7px;
-  margin-bottom: 10px;
+  font-size: 1.08rem; margin-bottom: 14px;
 }
 .chart-card svg { width: 100%; height: auto; }
 .chart-card .axis-label {
@@ -516,7 +510,6 @@ body::before {
 
   <header class="header">
     <h1>MCM / ICM <span class="accent">Award</span> Reviewer</h1>
-    <p class="subtitle">上传论文 PDF  &middot;  严苛评审  &middot;  O 奖特征对照</p>
     <p class="subtitle">已更新为更科学的校准预测方式，结果可能比旧版更严格。</p>
   </header>
 
@@ -528,7 +521,7 @@ body::before {
     </div>
     <div class="stat-tile">
       <div class="stat-num" id="statToday">—</div>
-      <div class="stat-label">今日预测</div>
+      <div class="stat-label">新版本预测</div>
     </div>
     <div class="stat-tile">
       <div class="stat-num" id="statTop">—</div>
@@ -576,17 +569,15 @@ body::before {
   <div class="stats-dashboard" id="statsDashboard" style="display:none;">
     <div class="chart-card">
       <h4>近期评分趋势</h4>
-      <svg id="scoreChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
-    </div>
-    <div class="chart-card">
-      <h4>旧版本奖项判断分布</h4>
-      <div class="chart-note">部署前历史统计，保留旧版口径</div>
-      <svg id="oldAwardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
+      <svg id="scoreChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div class="chart-card">
       <h4>新版校准后奖项判断分布</h4>
-      <div class="chart-note">仅统计本次更新后的校准预测</div>
-      <svg id="newAwardChart" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet"></svg>
+      <svg id="newAwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="chart-card">
+      <h4>旧版本奖项判断分布</h4>
+      <svg id="oldAwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
   </div>
 
@@ -628,13 +619,14 @@ async function loadStats() {
     const r = await fetch('/api/stats');
     if (!r.ok) return;
     const d = await r.json();
-    $('statTotal').textContent = d.total_predictions.toLocaleString();
-    $('statToday').textContent = d.today_predictions.toLocaleString();
-
-    // Top award
     const currentCounts = d.current_version_award_counts || {};
     const legacyCounts = d.legacy_award_counts || {};
     const combinedCounts = d.award_counts || {};
+    const currentTotal = Object.values(currentCounts).reduce((a, b) => a + Number(b || 0), 0);
+    $('statTotal').textContent = d.total_predictions.toLocaleString();
+    $('statToday').textContent = currentTotal.toLocaleString();
+
+    // Top award
     const ac = Object.values(currentCounts).some(v => Number(v) > 0) ? currentCounts : combinedCounts;
     let top = '—', max = 0;
     for (const [k, v] of Object.entries(ac)) { if (v > max) { max = v; top = k; } }
@@ -656,7 +648,7 @@ function drawScoreChart(scores) {
     svg.innerHTML = '<text x="200" y="85" text-anchor="middle" fill="#9b8d78" font-size="13" font-family="DM Sans, sans-serif">暂无数据</text>';
     return;
   }
-  const W = 400, H = 160, P = { top: 16, right: 20, bottom: 22, left: 36 };
+  const W = 400, H = 230, P = { top: 18, right: 22, bottom: 28, left: 40 };
   const pw = W - P.left - P.right, ph = H - P.top - P.bottom;
   const vals = scores.map(s => s.score);
   const yMin = Math.max(0, Math.floor(Math.min(...vals) / 10) * 10);
@@ -693,11 +685,11 @@ function drawAwardChart(svgId, counts) {
     svg.innerHTML = '<text x="200" y="85" text-anchor="middle" fill="#9b8d78" font-size="13" font-family="DM Sans, sans-serif">暂无数据</text>';
     return;
   }
-  const W = 400, H = 160, P = { top: 14, right: 20, bottom: 22, left: 20 };
+  const W = 400, H = 230, P = { top: 20, right: 24, bottom: 34, left: 24 };
   const pw = W - P.left - P.right;
   const awards = ['O','F','M','H','S'];
   const colors = { O: '#b8860b', F: '#8a8a8a', M: '#a0643a', H: '#7a8a5a', S: '#9b8d78' };
-  const barW = Math.min(48, (pw / 5) - 12);
+  const barW = Math.min(58, (pw / 5) - 12);
   const gap = (pw - barW * 5) / 6;
 
   let bars = '';
@@ -883,8 +875,7 @@ function renderRubric(rubric) {
         <span class="lbl">评分 / 100</span>
       </div>
       <div>
-        <div class="rubric-kicker">STRICT RUBRIC</div>
-        <div class="rubric-title">严苛 Rubric 评审 · 校准预测 ${escapeHtml(rubric.award_prediction || 'S/U')}</div>
+        <div class="rubric-title">预测结果 ${escapeHtml(rubric.award_prediction || 'S/U')}</div>
         <div class="rubric-comment">${escapeHtml(rubric.comments || '')}</div>
       </div>
     </div>

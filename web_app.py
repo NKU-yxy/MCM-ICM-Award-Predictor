@@ -53,6 +53,7 @@ ALLOWED_MIME = {"application/pdf"}
 TEMP_DIR = Path(tempfile.gettempdir()) / "mcm_predictor"
 TEMP_DIR.mkdir(mode=0o700, exist_ok=True)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+APP_DIR = Path(__file__).parent
 
 # Rate limiting
 RATE_LIMIT_WINDOW = 60 * 60       # seconds
@@ -253,6 +254,35 @@ def _legacy_counts_from_text(path: Path) -> tuple[int, dict[str, int], list]:
     return total, counts, []
 
 
+def _import_legacy_stats_file(path: Path, imported: set[str], source_prefix: str) -> bool:
+    signature = f"{source_prefix}:{_source_signature(path)}"
+    if signature in imported:
+        return False
+    try:
+        if path.suffix.lower() == ".jsonl":
+            total, counts, recent = _legacy_counts_from_jsonl(path)
+        elif path.suffix.lower() == ".json":
+            total, counts, recent = _legacy_counts_from_stats_file(path)
+        else:
+            total, counts, recent = _legacy_counts_from_text(path)
+    except Exception as exc:
+        logger.warning("跳过无法导入的旧统计 %s: %s", path.name, exc)
+        return False
+
+    if total <= 0 and not any(counts.values()):
+        return False
+
+    _usage_stats["total_predictions"] += total
+    _usage_stats["legacy_award_counts"] = _merge_award_counts(
+        _usage_stats.get("legacy_award_counts", {}),
+        counts,
+    )
+    _usage_stats["recent_scores"].extend(recent)
+    imported.add(signature)
+    logger.info("已导入旧统计 %s (%s): %s 次预测", path.name, source_prefix, total)
+    return True
+
+
 def _import_legacy_stats():
     """Import old aggregate stats once, freezing them as legacy distribution."""
     imported = set(_usage_stats.get("imported_legacy_sources") or [])
@@ -261,46 +291,24 @@ def _import_legacy_stats():
     for path in sorted(STATS_DIR.glob("usage_stats*.json")):
         if path.resolve() == STATS_FILE.resolve():
             continue
-        signature = _source_signature(path)
-        if signature in imported:
-            continue
-        try:
-            total, counts, recent = _legacy_counts_from_stats_file(path)
-        except Exception as exc:
-            logger.warning("跳过无法导入的旧统计文件 %s: %s", path.name, exc)
-            continue
-        if total <= 0 and not any(counts.values()):
-            continue
-        _usage_stats["total_predictions"] += total
-        _usage_stats["legacy_award_counts"] = _merge_award_counts(
-            _usage_stats.get("legacy_award_counts", {}),
-            counts,
-        )
-        _usage_stats["recent_scores"].extend(recent)
-        imported.add(signature)
-        imported_any_json = True
-        logger.info("已导入旧统计文件 %s: %s 次预测", path.name, total)
+        if _import_legacy_stats_file(path, imported, "disk"):
+            imported_any_json = True
 
     for pattern in ("usage_stats*.txt", "usage_stats*.md"):
         for path in sorted(STATS_DIR.glob(pattern)):
-            signature = _source_signature(path)
-            if signature in imported:
-                continue
-            try:
-                total, counts, recent = _legacy_counts_from_text(path)
-            except Exception as exc:
-                logger.warning("跳过无法导入的旧文本统计 %s: %s", path.name, exc)
-                continue
-            if total <= 0 and not any(counts.values()):
-                continue
-            _usage_stats["total_predictions"] += total
-            _usage_stats["legacy_award_counts"] = _merge_award_counts(
-                _usage_stats.get("legacy_award_counts", {}),
-                counts,
-            )
-            _usage_stats["recent_scores"].extend(recent)
-            imported.add(signature)
-            logger.info("已导入旧文本统计 %s: %s 次预测", path.name, total)
+            _import_legacy_stats_file(path, imported, "disk")
+
+    # Render persistent disks are often empty after a service rebuild or disk
+    # replacement. Support checked-in seed files with names that are not ignored
+    # by the repository's usage_stats*.json rule.
+    bundled_dirs = [APP_DIR, APP_DIR / "stats_seed"]
+    bundled_patterns = ("legacy_stats_seed*.json", "legacy_stats_seed*.txt", "legacy_stats_seed*.md")
+    for bundled_dir in bundled_dirs:
+        if not bundled_dir.exists():
+            continue
+        for pattern in bundled_patterns:
+            for path in sorted(bundled_dir.glob(pattern)):
+                _import_legacy_stats_file(path, imported, "bundled")
 
     # Avoid double counting the regular predictions.jsonl when aggregate JSON
     # files already exist. It is only used as a fallback for deployments that
