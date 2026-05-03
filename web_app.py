@@ -418,7 +418,12 @@ def _import_legacy_stats():
 
 
 def _load_stats():
-    """从磁盘加载持久化统计，并一次性合并旧版本统计。"""
+    """从磁盘加载持久化统计。
+
+    If the primary stats file exists, treat it as authoritative and do not scan
+    auxiliary legacy files. Scanning after every deploy can double-count old
+    aggregate files or prediction logs.
+    """
     global _usage_stats
     try:
         if STATS_FILE.exists():
@@ -427,7 +432,7 @@ def _load_stats():
             _usage_stats = _migrate_saved_stats(saved)
         else:
             _usage_stats = _default_usage_stats()
-        _import_legacy_stats()
+            _import_legacy_stats()
         _write_stats_to_disk(_stats_snapshot())
     except Exception as exc:
         logger.warning("统计加载失败，使用空统计: %s", exc)
