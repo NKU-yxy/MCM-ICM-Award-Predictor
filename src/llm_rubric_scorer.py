@@ -79,6 +79,7 @@ class DeepSeekRubricScorer:
         image_count: int,
         page_count: int,
         ref_count: int,
+        pdf_metadata: Dict[str, Any] | None = None,
         problem: str = "auto",
         contest: str = "auto",
         year: int | str = "auto",
@@ -100,6 +101,7 @@ class DeepSeekRubricScorer:
             image_count=image_count,
             page_count=page_count,
             ref_count=ref_count,
+            pdf_metadata=pdf_metadata or {},
             problem=problem,
             contest=contest,
             year=year,
@@ -151,26 +153,58 @@ class DeepSeekRubricScorer:
         image_count: int,
         page_count: int,
         ref_count: int,
+        pdf_metadata: Dict[str, Any],
         problem: str,
         contest: str,
         year: int | str,
     ) -> str:
         text = abstract or ""
         template = self.prompt_path.read_text(encoding="utf-8")
+        visual_evidence_count = int(
+            self._number(pdf_metadata.get("visual_evidence_count"), image_count or 0)
+        )
+        filtered_image_count = int(self._number(pdf_metadata.get("filtered_image_count"), 0))
+        raw_image_count = int(self._number(pdf_metadata.get("raw_image_count"), 0))
+        rendered_vector_count = int(
+            self._number(pdf_metadata.get("rendered_vector_figure_count"), 0)
+        )
+        table_caption_count = int(
+            self._number(
+                pdf_metadata.get("table_caption_count"),
+                structure.get("table_caption_count", 0),
+            )
+        )
+        pymupdf_table_count = int(
+            self._number(
+                pdf_metadata.get("pymupdf_table_count"),
+                structure.get("pymupdf_table_count", 0),
+            )
+        )
         values = {
             "text": text,
-            "word_count": str(len(text.split())),
-            "full_word_count": str(len((full_text or "").split())),
+            "word_count": str(
+                int(self._number(pdf_metadata.get("abstract_word_count"), self._english_token_count(text)))
+            ),
+            "full_word_count": str(self._english_token_count(full_text or "")),
             "full_text_evidence": self._full_text_evidence(full_text),
             "caption_evidence": self._caption_evidence(full_text),
             "problem": str(problem or "auto"),
             "contest": str(contest or "auto"),
             "year": str(year or "auto"),
+            "problem_type_guidance": self._problem_type_guidance(contest, problem),
             "page_count": str(page_count or 0),
-            "image_count": str(image_count or 0),
-            "figure_count": str(structure.get("figure_caption_count", 0) or image_count or 0),
+            "image_count": str(visual_evidence_count or 0),
+            "figure_count": str(
+                structure.get("figure_caption_count", 0) or visual_evidence_count or 0
+            ),
+            "visual_evidence_count": str(visual_evidence_count or 0),
             "figure_caption_count": str(structure.get("figure_caption_count", 0)),
             "table_count": str(structure.get("table_count", 0)),
+            "table_caption_count": str(table_caption_count),
+            "pymupdf_table_count": str(pymupdf_table_count),
+            "filtered_image_count": str(filtered_image_count),
+            "raw_image_count": str(raw_image_count),
+            "rendered_vector_figure_count": str(rendered_vector_count),
             "citation_count": str(structure.get("citation_count", 0)),
             "ref_count": str(ref_count or 0),
             "formula_count": str(structure.get("formula_count", 0)),
@@ -185,7 +219,103 @@ class DeepSeekRubricScorer:
         }
         for key, value in values.items():
             template = template.replace("{" + key + "}", value)
-        return template
+        return template + "\n\n" + self._pdf_parse_note(
+            visual_evidence_count=visual_evidence_count,
+            figure_caption_count=int(self._number(structure.get("figure_caption_count"), 0)),
+            table_count=int(self._number(structure.get("table_count"), 0)),
+            table_caption_count=table_caption_count,
+            pymupdf_table_count=pymupdf_table_count,
+            filtered_image_count=filtered_image_count,
+            raw_image_count=raw_image_count,
+            rendered_vector_count=rendered_vector_count,
+        )
+
+    @staticmethod
+    def _problem_type_guidance(contest: int | str, problem: int | str) -> str:
+        contest_text = str(contest or "auto").upper()
+        problem_text = str(problem or "auto").upper()
+
+        if contest_text == "MCM" and problem_text == "A":
+            return (
+                "MCM Problem A usually emphasizes continuous/physical modeling, equations, "
+                "simulation, parameter estimation, and validation against physical behavior. "
+                "Reward clear mathematical formulation and quantitative sensitivity checks."
+            )
+        if contest_text == "MCM" and problem_text == "B":
+            return (
+                "MCM Problem B usually emphasizes operations research, search/optimization, "
+                "discrete simulation, scheduling, or decision algorithms. Reward executable "
+                "algorithmic chains, constraints, scenario tests, and operational metrics."
+            )
+        if contest_text == "MCM" and problem_text == "C":
+            return (
+                "MCM Problem C usually emphasizes data science. Reward data cleaning, feature "
+                "engineering, statistical or machine-learning models, validation metrics, "
+                "uncertainty analysis, and visual analytics tied to decisions."
+            )
+        if contest_text == "ICM" and problem_text in {"D", "E"}:
+            return (
+                "ICM Problems D/E often mix environmental, network, risk, policy, and stakeholder "
+                "decision modeling. Multi-criteria evaluation, index systems, stakeholder utility, "
+                "network models, scenario simulation, risk scoring, and policy trade-off analysis "
+                "are valid high-level modeling evidence when quantified and connected to decisions."
+            )
+        if contest_text == "ICM" and problem_text == "F":
+            return (
+                "ICM Problem F is often policy/project design. Results-Based Management, Logical "
+                "Framework Approach, SMART objectives, Gantt/resource planning, budget allocation, "
+                "intervention prioritization, stakeholder analysis, and effectiveness metrics should "
+                "receive modeling credit when they are data-supported and quantitatively evaluated; "
+                "do not treat every policy/project paper as weak merely because it has fewer classical equations."
+            )
+        if contest_text == "ICM":
+            return (
+                "ICM papers may use policy, stakeholder, sustainability, network, or management "
+                "models. Judge whether the framework is quantified, internally consistent, and "
+                "validated by scenarios or evidence, not only whether it resembles a classical MCM model."
+            )
+        return (
+            "Use the identified contest/problem as context. Adapt expectations to the task: "
+            "physical modeling, data science, operations research, and policy/project design "
+            "can all be high-quality when the model chain, quantitative evidence, and decisions are clear."
+        )
+
+    @staticmethod
+    def _english_token_count(text: str) -> int:
+        return len(re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", text or ""))
+
+    @staticmethod
+    def _number(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _pdf_parse_note(
+        *,
+        visual_evidence_count: int,
+        figure_caption_count: int,
+        table_count: int,
+        table_caption_count: int,
+        pymupdf_table_count: int,
+        filtered_image_count: int,
+        raw_image_count: int,
+        rendered_vector_count: int,
+    ) -> str:
+        return (
+            "PDF automatic parsing note: these counts are machine-extracted from PyMuPDF "
+            "and are not human-verified. If a count looks abnormal, judge it together "
+            "with the body text and caption evidence. "
+            f"visual_evidence_count={visual_evidence_count}; "
+            f"figure_caption_count={figure_caption_count}; "
+            f"filtered_image_count={filtered_image_count}; "
+            f"raw_image_count={raw_image_count}; "
+            f"rendered_vector_figure_count={rendered_vector_count}; "
+            f"table_count={table_count}; "
+            f"table_caption_count={table_caption_count}; "
+            f"pymupdf_table_count={pymupdf_table_count}."
+        )
 
     @staticmethod
     def _full_text_evidence(full_text: str) -> str:
@@ -214,7 +344,9 @@ class DeepSeekRubricScorer:
     def _caption_evidence(full_text: str) -> str:
         text = full_text or ""
         matches = re.findall(
-            r"(?mi)^\s*((?:fig\.?|figure|tab\.?|table)\s+\d+[\s.:：-].{0,180})",
+            r"(?mi)^\s*((?:fig\.?|figure|tab\.?|table)\s+"
+            r"[A-Za-z]?\d+(?:\s*[\(\[]\s*[A-Za-z0-9]+\s*[\)\]])?"
+            r"(?:[A-Za-z])?[\s.:：\)-].{0,180})",
             text,
         )
         cleaned = [re.sub(r"\s+", " ", item).strip() for item in matches[:50]]

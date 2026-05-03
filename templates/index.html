@@ -81,6 +81,18 @@ body::before {
 }
 .header h1 .accent { color: var(--accent); }
 .header .subtitle { margin-top: 6px; color: var(--text-secondary); font-size: .92rem; }
+.version-note {
+  margin: 14px auto 0;
+  max-width: 760px;
+  padding: 12px 16px;
+  border: 1px solid rgba(90,138,106,.22);
+  border-radius: var(--radius-md);
+  background: var(--sage-dim);
+  color: var(--text-secondary);
+  font-size: .84rem;
+  line-height: 1.55;
+}
+.version-note strong { color: var(--sage); font-weight: 600; }
 
 /* ---- Stats Banner ---- */
 .stats-banner {
@@ -510,7 +522,10 @@ body::before {
 
   <header class="header">
     <h1>MCM / ICM <span class="accent">Award</span> Reviewer</h1>
-    <p class="subtitle">已更新为更科学的校准预测方式，结果可能比旧版更严格。</p>
+    <p class="subtitle">v3 校准版本：预测结果更合理，评审标准按 MCM/ICM 题型区分。</p>
+    <div class="version-note">
+      <strong>v3 已更新</strong>：改善参考文献数量计算、摘要长度识别、图片/图表识别与 O 奖样本校准；同时加入题型区分评判，降低对 ICM 政策/项目型论文的误判。
+    </div>
   </header>
 
   <!-- Stats Banner -->
@@ -521,7 +536,7 @@ body::before {
     </div>
     <div class="stat-tile">
       <div class="stat-num" id="statToday">—</div>
-      <div class="stat-label">新版本预测</div>
+      <div class="stat-label">v3 版本预测</div>
     </div>
     <div class="stat-tile">
       <div class="stat-num" id="statTop">—</div>
@@ -533,7 +548,7 @@ body::before {
   <div class="upload-zone" id="uploadZone">
     <div class="upload-icon">&#128206;</div>
     <h3>拖拽 PDF 到此处或点击上传</h3>
-    <p class="muted">最大 20MB &middot; 传输加密 &middot; 即时清理</p>
+    <p class="muted">仅限 PDF &middot; 最大 20MB &middot; 限流保护 &middot; 即时清理</p>
     <input type="file" id="fileInput" accept=".pdf,application/pdf">
   </div>
   <div class="file-info" id="fileInfo">
@@ -572,17 +587,25 @@ body::before {
       <svg id="scoreChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div class="chart-card">
-      <h4>新版校准后奖项判断分布</h4>
-      <svg id="newAwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
+      <h4>v3 版本近期评分趋势</h4>
+      <svg id="v3ScoreChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div class="chart-card">
-      <h4>旧版本奖项判断分布</h4>
-      <svg id="oldAwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
+      <h4>v3 版本奖项判断分布</h4>
+      <svg id="v3AwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="chart-card">
+      <h4>v2 版本奖项判断分布</h4>
+      <svg id="v2AwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="chart-card">
+      <h4>v1 版本奖项判断分布</h4>
+      <svg id="v1AwardChart" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
   </div>
 
   <div class="footer">
-    &#128274; 传输层加密 &middot; 文件即时清理 &middot; 启用评审时仅发送摘要与统计特征
+    &#128274; v3 版本 &middot; API 限流保护 &middot; 文件即时清理 &middot; 评审时仅发送摘要、全文证据片段与统计特征
   </div>
 </div>
 
@@ -619,31 +642,38 @@ async function loadStats() {
     const r = await fetch('/api/stats');
     if (!r.ok) return;
     const d = await r.json();
-    const currentCounts = d.current_version_award_counts || {};
-    const legacyCounts = d.legacy_award_counts || {};
+    const versionCounts = d.version_award_counts || {};
+    const v1Counts = d.v1_award_counts || versionCounts.v1 || d.legacy_award_counts || {};
+    const v2Counts = d.v2_award_counts || versionCounts.v2 || {};
+    const v3Counts = d.v3_award_counts || versionCounts.v3 || d.current_version_award_counts || {};
     const combinedCounts = d.award_counts || {};
-    const currentTotal = Object.values(currentCounts).reduce((a, b) => a + Number(b || 0), 0);
+    const v3Total = Object.values(v3Counts).reduce((a, b) => a + Number(b || 0), 0);
     $('statTotal').textContent = d.total_predictions.toLocaleString();
-    $('statToday').textContent = currentTotal.toLocaleString();
+    $('statToday').textContent = v3Total.toLocaleString();
 
     // Top award
-    const ac = Object.values(currentCounts).some(v => Number(v) > 0) ? currentCounts : combinedCounts;
+    const ac = Object.values(v3Counts).some(v => Number(v) > 0) ? v3Counts : combinedCounts;
     let top = '—', max = 0;
     for (const [k, v] of Object.entries(ac)) { if (v > max) { max = v; top = k; } }
     $('statTop').textContent = max > 0 ? top : '—';
 
     // Charts
-    drawScoreChart(d.recent_scores || []);
-    drawAwardChart('oldAwardChart', legacyCounts);
-    drawAwardChart('newAwardChart', currentCounts);
-    if (d.total_predictions > 0 || Object.values(currentCounts).some(v => Number(v) > 0)) {
+    drawScoreChart('scoreChart', d.recent_scores || []);
+    drawScoreChart('v3ScoreChart', d.v3_recent_scores || d.current_version_recent_scores || []);
+    drawAwardChart('v1AwardChart', v1Counts);
+    drawAwardChart('v2AwardChart', v2Counts);
+    drawAwardChart('v3AwardChart', v3Counts);
+    const hasVersionData = [v1Counts, v2Counts, v3Counts].some(counts =>
+      Object.values(counts || {}).some(v => Number(v) > 0)
+    );
+    if (d.total_predictions > 0 || hasVersionData) {
       $('statsDashboard').style.display = 'grid';
     }
   } catch (e) { /* silent */ }
 }
 
-function drawScoreChart(scores) {
-  const svg = $('scoreChart');
+function drawScoreChart(svgId, scores) {
+  const svg = $(svgId);
   if (!scores.length) {
     svg.innerHTML = '<text x="200" y="85" text-anchor="middle" fill="#9b8d78" font-size="13" font-family="DM Sans, sans-serif">暂无数据</text>';
     return;
@@ -911,7 +941,9 @@ function renderResults(d) {
     ['摘要词数', `${metadata.abstract_word_count || 0} words`],
     ['全文词数', `~${((metadata.full_text_word_count || 0) / 1000).toFixed(1)}k`],
     ['页数', `${metadata.page_count || 0}`],
-    ['图像/图题', `${metadata.image_count || 0} / ${structure.figure_caption_count || 0}`],
+    ['视觉证据估计', `${metadata.visual_evidence_count ?? metadata.image_count ?? 0}`],
+    ['自动识别图题', `${metadata.figure_caption_count ?? structure.figure_caption_count ?? 0}`],
+    ['可分析图像', `${metadata.filtered_image_count || 0}`],
     ['表格', `${structure.table_count || 0}`],
   ].map(([label, value]) => `<div class="evidence-tile"><div class="evidence-value">${value}</div><div class="evidence-label">${label}</div></div>`).join('');
 
@@ -923,6 +955,10 @@ function renderResults(d) {
       <div class="meta-stats">
         原始嵌入图: ${metadata.raw_image_count || 0} &middot;
         可分析图像: ${metadata.filtered_image_count || 0} &middot;
+        自动识别图题: ${metadata.figure_caption_count ?? structure.figure_caption_count ?? 0} &middot;
+        表格标题: ${metadata.table_caption_count ?? structure.table_caption_count ?? 0} &middot;
+        PyMuPDF 表格: ${metadata.pymupdf_table_count ?? structure.pymupdf_table_count ?? 0} &middot;
+        矢量图补充: ${metadata.rendered_vector_figure_count || 0} &middot;
         公式: ${structure.formula_count || 0} &middot;
         引用: ${structure.citation_count || 0} 处 &middot;
         参考文献: ${metadata.ref_count || 0}

@@ -23,10 +23,12 @@ import hashlib
 import tempfile
 import threading
 import re
+import asyncio
 from pathlib import Path
 from datetime import datetime, date
 from collections import defaultdict
 
+import fitz
 from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -49,17 +51,26 @@ logger = logging.getLogger("mcm-web")
 # Constants
 # ============================================================================
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_REQUEST_SIZE = MAX_FILE_SIZE + 2 * 1024 * 1024
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "45") or "45")
 ALLOWED_MIME = {"application/pdf"}
 TEMP_DIR = Path(tempfile.gettempdir()) / "mcm_predictor"
 TEMP_DIR.mkdir(mode=0o700, exist_ok=True)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 APP_DIR = Path(__file__).parent
 
-# Rate limiting
+# Rate limiting. Secure defaults are public-deployment friendly; set
+# RATE_LIMIT_MAX_REQUESTS=0 only for controlled local batch calibration.
 RATE_LIMIT_WINDOW = 60 * 60       # seconds
-RATE_LIMIT_MAX_REQUESTS = 5       # per identity per hour
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "5") or "5")
+RATE_LIMIT_DAILY_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_DAILY_MAX_REQUESTS", "20") or "20")
+GLOBAL_DAILY_MAX_REQUESTS = int(os.getenv("GLOBAL_DAILY_MAX_REQUESTS", "5000") or "5000")
 rate_limit_store: dict[str, list[float]] = defaultdict(list)
+daily_rate_limit_store: dict[str, list[float]] = defaultdict(list)
 rate_limit_lock = threading.Lock()
+PREDICT_CONCURRENCY_LIMIT = max(1, int(os.getenv("PREDICT_CONCURRENCY_LIMIT", "3") or "3"))
+PREDICT_QUEUE_TIMEOUT = float(os.getenv("PREDICT_QUEUE_TIMEOUT", "3") or "3")
+prediction_semaphore = asyncio.Semaphore(PREDICT_CONCURRENCY_LIMIT)
 
 # Public deployment settings
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "0").strip().lower() in {"1", "true", "yes"}
@@ -82,8 +93,17 @@ STATS_DIR = Path(os.environ.get("RENDER_DISK_PATH", str(Path(__file__).parent / 
 STATS_FILE = STATS_DIR / "usage_stats.json"
 PREDICTIONS_LOG = STATS_DIR / "predictions.jsonl"  # 每行一条完整预测结果
 _stats_lock = threading.Lock()
+STATS_VERSION_KEYS = ("v1", "v2", "v3")
+CURRENT_STATS_VERSION = "v3"
+PREVIOUS_STATS_VERSION = "v2"
+
+
 def _empty_award_counts() -> dict[str, int]:
     return {award: 0 for award in AWARD_KEYS}
+
+
+def _empty_version_award_counts() -> dict[str, dict[str, int]]:
+    return {version: _empty_award_counts() for version in STATS_VERSION_KEYS}
 
 
 def _default_usage_stats() -> dict:
@@ -93,7 +113,9 @@ def _default_usage_stats() -> dict:
         "today_date": str(date.today()),
         "legacy_award_counts": _empty_award_counts(),
         "current_version_award_counts": _empty_award_counts(),
+        "version_award_counts": _empty_version_award_counts(),
         "recent_scores": [],  # [{score, problem, timestamp}, ...] max 50
+        "current_version_recent_scores": [],
         "calibration_version": CALIBRATION_VERSION,
         "imported_legacy_sources": [],
     }
@@ -130,11 +152,30 @@ def _merge_award_counts(base: dict, incoming: dict) -> dict[str, int]:
     return merged
 
 
+def _coerce_version_award_counts(value) -> dict[str, dict[str, int]]:
+    counts = _empty_version_award_counts()
+    if not isinstance(value, dict):
+        return counts
+    for version in STATS_VERSION_KEYS:
+        counts[version] = _coerce_award_counts(value.get(version))
+    return counts
+
+
 def _combined_award_counts(stats: dict) -> dict[str, int]:
-    return _merge_award_counts(
-        stats.get("legacy_award_counts", {}),
-        stats.get("current_version_award_counts", {}),
-    )
+    version_counts = _coerce_version_award_counts(stats.get("version_award_counts"))
+    if any(any(counts.values()) for counts in version_counts.values()):
+        combined = _empty_award_counts()
+        for counts in version_counts.values():
+            combined = _merge_award_counts(combined, counts)
+        return combined
+    return _merge_award_counts(stats.get("legacy_award_counts", {}), stats.get("current_version_award_counts", {}))
+
+
+def _version_counts_from_legacy_current(legacy_counts: dict, current_counts: dict) -> dict[str, dict[str, int]]:
+    version_counts = _empty_version_award_counts()
+    version_counts["v1"] = _coerce_award_counts(legacy_counts)
+    version_counts["v2"] = _coerce_award_counts(current_counts)
+    return version_counts
 
 
 def _source_signature(path: Path) -> str:
@@ -169,6 +210,9 @@ def _migrate_saved_stats(saved: dict) -> dict:
     stats["today_predictions"] = max(_int_value(saved.get("today_predictions")), 0)
     stats["today_date"] = str(saved.get("today_date") or date.today())
     stats["recent_scores"] = _recent_scores(saved.get("recent_scores"))
+    stats["current_version_recent_scores"] = _recent_scores(
+        saved.get("current_version_recent_scores")
+    )
     stats["imported_legacy_sources"] = list(saved.get("imported_legacy_sources") or [])
 
     if saved.get("calibration_version") == CALIBRATION_VERSION:
@@ -176,10 +220,35 @@ def _migrate_saved_stats(saved: dict) -> dict:
         stats["current_version_award_counts"] = _coerce_award_counts(
             saved.get("current_version_award_counts")
         )
+        stats["version_award_counts"] = _coerce_version_award_counts(
+            saved.get("version_award_counts")
+        )
+        if not any(any(counts.values()) for counts in stats["version_award_counts"].values()):
+            stats["version_award_counts"] = _empty_version_award_counts()
+            stats["version_award_counts"]["v1"] = stats["legacy_award_counts"]
+            stats["version_award_counts"][CURRENT_STATS_VERSION] = stats[
+                "current_version_award_counts"
+            ]
     else:
-        # Pre-calibration files only had award_counts; freeze them as legacy.
-        stats["legacy_award_counts"] = _coerce_award_counts(saved.get("award_counts"))
+        # Migrating to v3: keep old data visible, but reset v3 to post-deploy runs only.
+        old_legacy_counts = _coerce_award_counts(saved.get("legacy_award_counts"))
+        old_current_counts = _coerce_award_counts(saved.get("current_version_award_counts"))
+        old_award_counts = _coerce_award_counts(saved.get("award_counts"))
+        if any(old_legacy_counts.values()) or any(old_current_counts.values()):
+            stats["version_award_counts"] = _version_counts_from_legacy_current(
+                old_legacy_counts,
+                old_current_counts,
+            )
+        else:
+            stats["version_award_counts"] = _empty_version_award_counts()
+            stats["version_award_counts"]["v1"] = old_award_counts
+
+        stats["legacy_award_counts"] = _merge_award_counts(
+            stats["version_award_counts"].get("v1", {}),
+            stats["version_award_counts"].get(PREVIOUS_STATS_VERSION, {}),
+        )
         stats["current_version_award_counts"] = _empty_award_counts()
+        stats["current_version_recent_scores"] = []
         stats["imported_legacy_sources"].append(f"primary:{_source_signature(STATS_FILE)}")
 
     if stats["today_date"] != str(date.today()):
@@ -277,6 +346,9 @@ def _import_legacy_stats_file(path: Path, imported: set[str], source_prefix: str
         _usage_stats.get("legacy_award_counts", {}),
         counts,
     )
+    version_counts = _coerce_version_award_counts(_usage_stats.get("version_award_counts"))
+    version_counts["v1"] = _merge_award_counts(version_counts.get("v1", {}), counts)
+    _usage_stats["version_award_counts"] = version_counts
     _usage_stats["recent_scores"].extend(recent)
     imported.add(signature)
     logger.info("已导入旧统计 %s (%s): %s 次预测", path.name, source_prefix, total)
@@ -334,6 +406,9 @@ def _import_legacy_stats():
             _usage_stats.get("legacy_award_counts", {}),
             counts,
         )
+        version_counts = _coerce_version_award_counts(_usage_stats.get("version_award_counts"))
+        version_counts["v1"] = _merge_award_counts(version_counts.get("v1", {}), counts)
+        _usage_stats["version_award_counts"] = version_counts
         _usage_stats["recent_scores"].extend(recent)
         imported.add(signature)
         logger.info("已导入旧预测日志 %s: %s 次预测", path.name, total)
@@ -348,6 +423,7 @@ def _load_stats():
     try:
         if STATS_FILE.exists():
             saved = json.loads(STATS_FILE.read_text("utf-8"))
+            _backup_stats_before_version_migration(saved)
             _usage_stats = _migrate_saved_stats(saved)
         else:
             _usage_stats = _default_usage_stats()
@@ -359,12 +435,31 @@ def _load_stats():
 
 
 def _write_stats_to_disk(stats_copy: dict):
-    """将统计写入磁盘（无锁，仅供异步调用）"""
+    """将统计原子写入磁盘（无锁，仅供异步调用）"""
     try:
         STATS_DIR.mkdir(parents=True, exist_ok=True)
-        STATS_FILE.write_text(json.dumps(stats_copy, ensure_ascii=False, indent=2), "utf-8")
+        tmp_file = STATS_FILE.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        tmp_file.write_text(json.dumps(stats_copy, ensure_ascii=False, indent=2), "utf-8")
+        os.replace(tmp_file, STATS_FILE)
     except Exception:
         pass
+
+
+def _backup_stats_before_version_migration(saved: dict):
+    """Keep a raw backup before rewriting aggregate stats for a new calibration version."""
+    try:
+        if not STATS_FILE.exists() or saved.get("calibration_version") == CALIBRATION_VERSION:
+            return
+        backup_dir = STATS_DIR / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        existing = list(backup_dir.glob(f"stats_backup_before_{CALIBRATION_VERSION}_*.json"))
+        if existing:
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"stats_backup_before_{CALIBRATION_VERSION}_{timestamp}.json"
+        backup_path.write_text(STATS_FILE.read_text("utf-8"), "utf-8")
+    except Exception as exc:
+        logger.warning("统计迁移备份失败: %s", exc)
 
 
 def _save_prediction_result(result: dict):
@@ -379,6 +474,7 @@ def _save_prediction_result(result: dict):
 
 
 def _stats_snapshot() -> dict:
+    version_counts = _coerce_version_award_counts(_usage_stats.get("version_award_counts"))
     return {
         "total_predictions": _usage_stats["total_predictions"],
         "today_predictions": _usage_stats["today_predictions"],
@@ -387,8 +483,16 @@ def _stats_snapshot() -> dict:
         "current_version_award_counts": _coerce_award_counts(
             _usage_stats.get("current_version_award_counts")
         ),
+        "version_award_counts": version_counts,
+        "v1_award_counts": version_counts["v1"],
+        "v2_award_counts": version_counts["v2"],
+        "v3_award_counts": version_counts["v3"],
         "award_counts": _combined_award_counts(_usage_stats),
         "recent_scores": _recent_scores(_usage_stats.get("recent_scores")),
+        "current_version_recent_scores": _recent_scores(
+            _usage_stats.get("current_version_recent_scores")
+        ),
+        "v3_recent_scores": _recent_scores(_usage_stats.get("current_version_recent_scores")),
         "calibration_version": CALIBRATION_VERSION,
         "imported_legacy_sources": list(_usage_stats.get("imported_legacy_sources") or []),
     }
@@ -407,17 +511,41 @@ def record_prediction(score: float, problem: str, best_award: str):
         current_counts = _coerce_award_counts(_usage_stats.get("current_version_award_counts"))
         current_counts[best_award] += 1
         _usage_stats["current_version_award_counts"] = current_counts
-        _usage_stats["recent_scores"].append({
+        version_counts = _coerce_version_award_counts(_usage_stats.get("version_award_counts"))
+        version_counts[CURRENT_STATS_VERSION][best_award] += 1
+        _usage_stats["version_award_counts"] = version_counts
+        score_item = {
             "score": round(score, 1),
             "problem": problem,
             "timestamp": datetime.now().isoformat(timespec="minutes"),
-        })
+            "version": CURRENT_STATS_VERSION,
+        }
+        _usage_stats["recent_scores"].append(score_item)
+        _usage_stats["current_version_recent_scores"].append(score_item)
         if len(_usage_stats["recent_scores"]) > 50:
             _usage_stats["recent_scores"] = _usage_stats["recent_scores"][-50:]
+        if len(_usage_stats["current_version_recent_scores"]) > 50:
+            _usage_stats["current_version_recent_scores"] = _usage_stats[
+                "current_version_recent_scores"
+            ][-50:]
         # 拷贝快照，释放锁后再写盘，避免 I/O 阻塞事件循环
         stats_snapshot = _stats_snapshot()
     # 锁外写盘，不阻塞 stats 查询
     _write_stats_to_disk(stats_snapshot)
+
+
+def enforce_global_daily_limit():
+    if GLOBAL_DAILY_MAX_REQUESTS <= 0:
+        return
+    with _stats_lock:
+        if _usage_stats.get("today_date") != str(date.today()):
+            return
+        today_count = max(_int_value(_usage_stats.get("today_predictions")), 0)
+    if today_count >= GLOBAL_DAILY_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"今日全站预测次数已达上限 {GLOBAL_DAILY_MAX_REQUESTS} 次，请明天再试",
+        )
 
 
 def public_rubric_payload(rubric: dict) -> dict:
@@ -459,6 +587,29 @@ def detect_summary_sheet_problem(full_text: str) -> str | None:
     """Read the official MCM/ICM summary sheet problem marker when present."""
     match = re.search(r"(?is)\bProblem\s+Chosen\s*[:：]?\s*([A-F])\b", full_text or "")
     return match.group(1).upper() if match else None
+
+
+def _validate_uploaded_pdf(path: Path) -> int:
+    """Fast structural validation before expensive parsing or API calls."""
+    try:
+        doc = fitz.open(path)
+    except Exception:
+        raise HTTPException(status_code=400, detail="文件不是可解析的 PDF")
+
+    try:
+        if bool(getattr(doc, "needs_pass", False)) or bool(getattr(doc, "is_encrypted", False)):
+            raise HTTPException(status_code=400, detail="暂不接受加密或需要密码的 PDF")
+        page_count = len(doc)
+        if page_count <= 0:
+            raise HTTPException(status_code=400, detail="PDF 没有可解析页面")
+        if page_count > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF 页数过多（{page_count} 页），当前上限 {MAX_PDF_PAGES} 页",
+            )
+        return page_count
+    finally:
+        doc.close()
 
 
 # ============================================================================
@@ -520,15 +671,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     @classmethod
     def _client_identity(cls, request: Request) -> str:
         ip = cls._get_client_ip(request)
-        user_agent = request.headers.get("User-Agent", "")[:200]
-        digest = hashlib.sha256(f"{ip}|{user_agent}".encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(ip.encode("utf-8")).hexdigest()[:16]
         return digest
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/api/predict" and request.method == "POST":
+        if (
+            RATE_LIMIT_MAX_REQUESTS > 0
+            and request.url.path == "/api/predict"
+            and request.method == "POST"
+        ):
             client_id = self._client_identity(request)
             now = time.time()
             window_start = now - RATE_LIMIT_WINDOW
+            day_start = now - 24 * 60 * 60
 
             with rate_limit_lock:
                 stale_keys = [
@@ -537,19 +692,48 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 ]
                 for key in stale_keys:
                     rate_limit_store.pop(key, None)
+                stale_daily_keys = [
+                    key for key, values in daily_rate_limit_store.items()
+                    if not values or max(values) <= day_start
+                ]
+                for key in stale_daily_keys:
+                    daily_rate_limit_store.pop(key, None)
 
                 rate_limit_store[client_id] = [
                     t for t in rate_limit_store[client_id] if t > window_start
+                ]
+                daily_rate_limit_store[client_id] = [
+                    t for t in daily_rate_limit_store[client_id] if t > day_start
                 ]
 
                 if len(rate_limit_store[client_id]) >= RATE_LIMIT_MAX_REQUESTS:
                     wait = int(RATE_LIMIT_WINDOW - (now - rate_limit_store[client_id][0]))
                     return JSONResponse(
-                        {"detail": f"一小时内最多提交 5 次，请 {max(wait, 1)} 秒后再试"},
+                        {
+                            "detail": (
+                                f"一小时内最多提交 {RATE_LIMIT_MAX_REQUESTS} 次，"
+                                f"请 {max(wait, 1)} 秒后再试"
+                            )
+                        },
+                        status_code=429,
+                    )
+                if (
+                    RATE_LIMIT_DAILY_MAX_REQUESTS > 0
+                    and len(daily_rate_limit_store[client_id]) >= RATE_LIMIT_DAILY_MAX_REQUESTS
+                ):
+                    wait = int(24 * 60 * 60 - (now - daily_rate_limit_store[client_id][0]))
+                    return JSONResponse(
+                        {
+                            "detail": (
+                                f"24 小时内最多提交 {RATE_LIMIT_DAILY_MAX_REQUESTS} 次，"
+                                f"请 {max(wait, 1)} 秒后再试"
+                            )
+                        },
                         status_code=429,
                     )
 
                 rate_limit_store[client_id].append(now)
+                daily_rate_limit_store[client_id].append(now)
 
         return await call_next(request)
 
@@ -561,7 +745,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 app = FastAPI(
     title="MCM/ICM Award Reviewer",
     description="基于 AI 的美赛论文严苛评审",
-    version="4.0",
+    version="3.0",
 )
 
 # 注册中间件
@@ -603,13 +787,22 @@ async def stats():
     with _stats_lock:
         legacy_counts = _coerce_award_counts(_usage_stats.get("legacy_award_counts"))
         current_counts = _coerce_award_counts(_usage_stats.get("current_version_award_counts"))
+        version_counts = _coerce_version_award_counts(_usage_stats.get("version_award_counts"))
         return {
             "total_predictions": _usage_stats["total_predictions"],
             "today_predictions": _usage_stats["today_predictions"],
             "legacy_award_counts": legacy_counts,
             "current_version_award_counts": current_counts,
-            "award_counts": _merge_award_counts(legacy_counts, current_counts),
+            "version_award_counts": version_counts,
+            "v1_award_counts": version_counts["v1"],
+            "v2_award_counts": version_counts["v2"],
+            "v3_award_counts": version_counts["v3"],
+            "award_counts": _combined_award_counts(_usage_stats),
             "recent_scores": _recent_scores(_usage_stats.get("recent_scores")),
+            "current_version_recent_scores": _recent_scores(
+                _usage_stats.get("current_version_recent_scores")
+            ),
+            "v3_recent_scores": _recent_scores(_usage_stats.get("current_version_recent_scores")),
             "calibration_version": CALIBRATION_VERSION,
         }
 
@@ -630,7 +823,16 @@ async def predict(
     - 频率限制 (中间件)
     - 临时文件自动清理
     """
+    enforce_global_daily_limit()
+
     # ---- 1. 文件类型校验 ----
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_REQUEST_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"请求体过大，上限约 {MAX_REQUEST_SIZE // 1024 // 1024}MB",
+        )
+
     if file.content_type and file.content_type not in ALLOWED_MIME:
         raise HTTPException(
             status_code=400,
@@ -639,6 +841,8 @@ async def predict(
 
     # ---- 2. 文件名校验 ----
     original_name = file.filename or "upload.pdf"
+    if len(original_name) > 255:
+        raise HTTPException(status_code=400, detail="文件名过长")
     if not original_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="仅接受 .pdf 后缀的文件")
 
@@ -680,11 +884,35 @@ async def predict(
     tmp_path.write_bytes(contents)
 
     # ---- 6. 解析参数 ----
-    problem_arg = problem.strip().upper() if problem.strip().lower() != "auto" else None
-    year_arg = int(year.strip()) if year.strip().lower() != "auto" and year.strip().isdigit() else None
+    problem_text = (problem or "auto").strip()
+    year_text = (year or "auto").strip()
+    if problem_text.lower() == "auto":
+        problem_arg = None
+    else:
+        problem_arg = problem_text.upper()
+        if problem_arg not in {"A", "B", "C", "D", "E", "F"}:
+            raise HTTPException(status_code=400, detail="Problem 只能是 auto 或 A-F")
+
+    if year_text.lower() == "auto":
+        year_arg = None
+    elif year_text.isdigit() and 1985 <= int(year_text) <= 2100:
+        year_arg = int(year_text)
+    else:
+        raise HTTPException(status_code=400, detail="Year 只能是 auto 或合法年份")
 
     # ---- 7. 解析 PDF 并调用 AI 评分 ----
+    acquired_slot = False
     try:
+        try:
+            await asyncio.wait_for(prediction_semaphore.acquire(), timeout=PREDICT_QUEUE_TIMEOUT)
+            acquired_slot = True
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=429,
+                detail="服务器正在处理其他论文，请稍后再试",
+            )
+
+        _validate_uploaded_pdf(tmp_path)
         pdf_parser, image_extractor, rubric_scorer, problem_detector = get_evaluators()
         parsed = pdf_parser.parse(str(tmp_path))
         if not parsed.get("success"):
@@ -708,9 +936,26 @@ async def predict(
         page_count = int(metadata.get("page_count", 0) or 0)
         ref_count = int(metadata.get("ref_count", 0) or 0)
         raw_image_count = int(metadata.get("raw_image_count", 0) or 0)
+        abstract_word_count = int(
+            metadata.get("abstract_word_count")
+            or PDFParser._count_english_tokens(abstract)
+        )
+        full_text_word_count = PDFParser._count_english_tokens(full_text)
         figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
-        filtered_image_count = len(images)
-        display_image_count = max(filtered_image_count, raw_image_count, figure_caption_count)
+        table_caption_count = int(structure.get("table_caption_count", 0) or 0)
+        pymupdf_table_count = int(structure.get("pymupdf_table_count", 0) or 0)
+        rendered_vector_figure_count = int(metadata.get("rendered_vector_figure_count", 0) or 0)
+        filtered_image_count = int(metadata.get("filtered_image_count", len(images)) or 0)
+        table_count = int(structure.get("table_count", 0) or 0)
+        visual_evidence_count = int(
+            metadata.get("visual_evidence_count")
+            or max(
+                figure_caption_count,
+                filtered_image_count,
+                rendered_vector_figure_count,
+            ) + table_count
+        )
+        display_image_count = visual_evidence_count
         # 释放原始图片内存（PIL Image 无循环引用，del 后引用计数立即回收）
         del images
 
@@ -722,6 +967,7 @@ async def predict(
             image_count=display_image_count,
             page_count=page_count,
             ref_count=ref_count,
+            pdf_metadata=metadata,
             problem=problem_detected,
             contest=contest_detected,
             year=year_detected,
@@ -729,6 +975,7 @@ async def predict(
         calibration_metadata = {
             "page_count": page_count,
             "image_count": display_image_count,
+            "visual_evidence_count": visual_evidence_count,
             "ref_count": ref_count,
         }
         llm_rubric = calibrate_rubric_award(
@@ -742,6 +989,8 @@ async def predict(
         logger.exception("预测失败")
         raise HTTPException(status_code=500, detail="预测失败，请稍后重试")
     finally:
+        if acquired_slot:
+            prediction_semaphore.release()
         _cleanup_temp_file(tmp_path)
 
     # ---- 8. 记录统计 ----
@@ -768,10 +1017,19 @@ async def predict(
         "strengths": llm_rubric.get("strengths"),
         "weaknesses": llm_rubric.get("weaknesses"),
         "metadata": {
-            "abstract_word_count": len(abstract.split()),
-            "full_text_word_count": len(full_text.split()),
+            "abstract_word_count": abstract_word_count,
+            "abstract_extraction_method": metadata.get("abstract_extraction_method"),
+            "abstract_confidence": metadata.get("abstract_confidence"),
+            "full_text_word_count": full_text_word_count,
             "page_count": page_count,
             "image_count": display_image_count,
+            "visual_evidence_count": visual_evidence_count,
+            "figure_caption_count": figure_caption_count,
+            "table_caption_count": table_caption_count,
+            "pymupdf_table_count": pymupdf_table_count,
+            "filtered_image_count": filtered_image_count,
+            "raw_image_count": raw_image_count,
+            "rendered_vector_figure_count": rendered_vector_figure_count,
             "ref_count": ref_count,
             "structure_completeness": structure.get("structure_completeness"),
             "has_sensitivity_analysis": structure.get("has_sensitivity_analysis"),
@@ -790,9 +1048,16 @@ async def predict(
         "year": year_detected,
         "metadata": {
             "abstract_length": len(abstract),
-            "abstract_word_count": len(abstract.split()),
-            "full_text_word_count": len(full_text.split()),
+            "abstract_word_count": abstract_word_count,
+            "abstract_extraction_method": metadata.get("abstract_extraction_method"),
+            "abstract_confidence": metadata.get("abstract_confidence"),
+            "full_text_word_count": full_text_word_count,
             "image_count": display_image_count,
+            "visual_evidence_count": visual_evidence_count,
+            "figure_caption_count": figure_caption_count,
+            "table_caption_count": table_caption_count,
+            "pymupdf_table_count": pymupdf_table_count,
+            "rendered_vector_figure_count": rendered_vector_figure_count,
             "filtered_image_count": filtered_image_count,
             "raw_image_count": raw_image_count,
             "page_count": page_count,
@@ -828,7 +1093,7 @@ async def startup():
     if not api_key:
         logger.warning("!!! 未设置 DEEPSEEK_API_KEY 环境变量 — AI 评分将不可用 !!!")
     else:
-        logger.info(f"DeepSeek API Key 已配置 ({api_key[:8]}***)")
+        logger.info("DeepSeek API Key 已配置")
 
     default_hosts = {"127.0.0.1", "localhost", "testserver"}
     if set(ALLOWED_HOSTS) == default_hosts:

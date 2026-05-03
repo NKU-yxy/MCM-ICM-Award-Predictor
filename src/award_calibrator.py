@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 
 AWARD_KEYS = ["O", "F", "M", "H", "S"]
-CALIBRATION_VERSION = "calibrated_v1"
+CALIBRATION_VERSION = "calibrated_v3_type_aware_ref_abstract_visual"
 
 
 def calibrate_rubric_award(
@@ -31,10 +31,11 @@ def calibrate_rubric_award(
     calibrated = dict(rubric or {})
     raw_award = str(calibrated.get("award_prediction", "S/U") or "S/U")
     raw_probs = dict(calibrated.get("probabilities") or {})
+    normalized_raw_probs = _normalize_percent_dict(raw_probs)
     raw_score = _number(calibrated.get("score"), 0.0)
 
     calibrated["raw_award_prediction"] = raw_award
-    calibrated["raw_probabilities"] = _normalize_percent_dict(raw_probs)
+    calibrated["raw_probabilities"] = normalized_raw_probs
     calibrated["calibration_version"] = CALIBRATION_VERSION
 
     if calibrated.get("status") != "ok":
@@ -52,8 +53,13 @@ def calibrate_rubric_award(
     details = calibrated.get("details") or {}
     evidence = _evidence_summary(metadata, structure, details)
     penalty, reasons = _evidence_penalty(evidence)
-    calibrated_score = max(0.0, min(100.0, raw_score - penalty))
-    probabilities = _calibrated_probabilities(calibrated_score, evidence)
+    bonus, bonus_reasons = _o_like_bonus(evidence, raw_score)
+    calibrated_score = max(0.0, min(100.0, raw_score - penalty + bonus))
+    probabilities = _calibrated_probabilities(
+        calibrated_score,
+        evidence,
+        raw_probabilities=normalized_raw_probs if raw_probs else None,
+    )
     award = _award_from_probabilities(probabilities)
 
     calibrated.update(
@@ -61,7 +67,7 @@ def calibrate_rubric_award(
             "award_prediction": "S/U" if award == "S" else award,
             "probabilities": probabilities,
             "calibrated_score": int(round(calibrated_score)),
-            "calibration_note": _calibration_note(penalty, reasons),
+            "calibration_note": _calibration_note(penalty, reasons, bonus, bonus_reasons),
         }
     )
     return calibrated
@@ -74,12 +80,18 @@ def _evidence_summary(
 ) -> Dict[str, Any]:
     page_count = int(_number(metadata.get("page_count"), 0))
     image_count = int(_number(metadata.get("image_count"), 0))
+    visual_evidence_count = int(_number(metadata.get("visual_evidence_count"), -1))
     figure_captions = int(_number(structure.get("figure_caption_count"), 0))
     table_count = int(_number(structure.get("table_count"), 0))
-    visual_total = max(image_count, figure_captions) + table_count
+    visual_total = (
+        visual_evidence_count
+        if visual_evidence_count >= 0
+        else max(image_count, figure_captions) + table_count
+    )
 
     return {
         "page_count": page_count,
+        "abstract_word_count": int(_number(metadata.get("abstract_word_count"), 0)),
         "visual_total": visual_total,
         "ref_count": int(_number(metadata.get("ref_count"), 0)),
         "formula_count": int(_number(structure.get("formula_count"), 0)),
@@ -90,6 +102,7 @@ def _evidence_summary(
         "has_model_comparison": bool(structure.get("has_model_comparison")),
         "has_error_analysis": bool(structure.get("has_error_analysis")),
         "content_score": _number(details.get("content_score"), 0.0),
+        "length_score": _number(details.get("length_style_score"), 0.0),
         "conclusion_score": _number(details.get("conclusion_score"), 0.0),
         "visual_score": _number(details.get("visual_score"), 0.0),
     }
@@ -100,50 +113,114 @@ def _evidence_penalty(evidence: Dict[str, Any]) -> tuple[float, list[str]]:
     reasons: list[str] = []
 
     if evidence["page_count"] and evidence["page_count"] < 12:
-        penalty += 6.0
+        penalty += 4.0
         reasons.append("paper is very short")
     elif evidence["page_count"] and evidence["page_count"] < 18:
-        penalty += 3.0
+        penalty += 2.0
         reasons.append("page count is below typical finalist/O range")
 
     if evidence["visual_total"] < 5:
-        penalty += 5.0
+        penalty += 3.0
         reasons.append("visual/table evidence is sparse")
     elif evidence["visual_total"] < 10:
-        penalty += 3.0
+        penalty += 2.0
         reasons.append("visual/table evidence is limited")
+    elif evidence["visual_total"] < 14:
+        penalty += 1.0
+        reasons.append("visual/table evidence is below O-sample range")
 
     if evidence["completeness"] < 0.50:
-        penalty += 5.0
+        penalty += 3.0
         reasons.append("core paper structure is incomplete")
     elif evidence["completeness"] < 0.75:
-        penalty += 2.5
+        penalty += 1.25
         reasons.append("paper structure is not fully complete")
 
     if not evidence["has_sensitivity"]:
-        penalty += 2.0
-        reasons.append("missing sensitivity analysis")
+        amount = 1.0 if evidence["conclusion_score"] < 9 else 0.35
+        if amount > 0:
+            penalty += amount
+            reasons.append("missing explicit sensitivity analysis")
     if not evidence["has_validation"]:
-        penalty += 2.0
-        reasons.append("missing model validation")
+        if evidence["content_score"] < 23 or evidence["conclusion_score"] < 9:
+            amount = 1.25
+        elif evidence["content_score"] < 26 or evidence["conclusion_score"] < 12:
+            amount = 0.5
+        else:
+            amount = 0.0
+        if amount > 0:
+            penalty += amount
+            reasons.append("missing explicit model validation")
     if not (evidence["has_error_analysis"] or evidence["has_model_comparison"]):
-        penalty += 1.5
-        reasons.append("missing error analysis or model comparison")
+        if evidence["conclusion_score"] < 9:
+            amount = 1.0
+        elif evidence["conclusion_score"] < 11 and evidence["content_score"] < 24:
+            amount = 0.5
+        else:
+            amount = 0.0
+        if amount > 0:
+            penalty += amount
+            reasons.append("missing explicit error analysis or model comparison")
 
-    return min(penalty, 10.0), reasons
+    return min(penalty, 4.0), reasons
 
 
-def _calibrated_probabilities(score: float, evidence: Dict[str, Any]) -> Dict[str, int]:
-    centers = {"O": 96.0, "F": 90.0, "M": 82.0, "H": 69.0, "S": 50.0}
-    scales = {"O": 3.0, "F": 4.0, "M": 5.5, "H": 7.0, "S": 11.0}
+def _o_like_bonus(evidence: Dict[str, Any], raw_score: float) -> tuple[float, list[str]]:
+    if raw_score < 70:
+        return 0.0, []
+
+    abstract_words = evidence.get("abstract_word_count", 0)
+    checks = [
+        evidence["page_count"] >= 20,
+        360 <= abstract_words <= 650,
+        evidence["visual_total"] >= 18,
+        evidence["content_score"] >= 24,
+        evidence["conclusion_score"] >= 10,
+        evidence["visual_score"] >= 18,
+        evidence["completeness"] >= 0.80,
+    ]
+    matched = sum(1 for ok in checks if ok)
+
+    if raw_score >= 80 and matched >= 5:
+        return 3.0, ["O-sample-like evidence profile"]
+    if raw_score >= 75 and matched >= 5:
+        return 2.0, ["strong O-sample-like evidence profile"]
+    if matched >= 4:
+        return 1.0, ["partial O-sample-like evidence profile"]
+    return 0.0, []
+
+
+def _calibrated_probabilities(
+    score: float,
+    evidence: Dict[str, Any],
+    *,
+    raw_probabilities: Dict[str, int] | None = None,
+) -> Dict[str, int]:
+    score_probs = _score_probabilities(score)
+    if raw_probabilities:
+        raw_probs = {key: raw_probabilities.get(key, 0) / 100.0 for key in AWARD_KEYS}
+        probs = _normalize_float(
+            {
+                award: 0.70 * score_probs.get(award, 0.0)
+                + 0.30 * raw_probs.get(award, 0.0)
+                for award in AWARD_KEYS
+            }
+        )
+    else:
+        probs = score_probs
+
+    probs = _apply_score_caps(probs, score, evidence)
+    return _round_percentages(probs)
+
+
+def _score_probabilities(score: float) -> Dict[str, float]:
+    centers = {"O": 90.0, "F": 84.0, "M": 77.0, "H": 67.0, "S": 52.0}
+    scales = {"O": 4.0, "F": 4.5, "M": 6.0, "H": 7.5, "S": 10.0}
     weights = {
         award: math.exp(-0.5 * ((score - centers[award]) / scales[award]) ** 2)
         for award in AWARD_KEYS
     }
-
-    probs = _normalize_float(weights)
-    probs = _apply_score_caps(probs, score, evidence)
-    return _round_percentages(probs)
+    return _normalize_float(weights)
 
 
 def _apply_score_caps(
@@ -152,33 +229,46 @@ def _apply_score_caps(
     evidence: Dict[str, Any],
 ) -> Dict[str, float]:
     if score < 65:
-        caps = {"O": 0.0, "F": 0.005, "M": 0.08}
-    elif score < 75:
-        caps = {"O": 0.002, "F": 0.02, "M": 0.20}
-    elif score < 80:
-        caps = {"O": 0.005, "F": 0.04, "M": 0.34}
+        caps = {"O": 0.0, "F": 0.005, "M": 0.12}
+    elif score < 72:
+        caps = {"O": 0.002, "F": 0.02, "M": 0.25}
+    elif score < 78:
+        caps = {"O": 0.005, "F": 0.04, "M": 0.55}
+    elif score < 84:
+        caps = {"O": 0.02, "F": 0.18}
     elif score < 88:
-        caps = {"O": 0.02, "F": 0.10}
-    elif score < 94:
-        caps = {"O": 0.05}
+        caps = {"O": 0.06, "F": 0.45}
+    elif score < 92:
+        caps = {"O": 0.15}
     else:
         caps = {}
 
     if not _o_ready(evidence):
-        caps["O"] = min(caps.get("O", 1.0), 0.08)
+        caps["O"] = min(caps.get("O", 1.0), 0.05)
     if not _finalist_ready(evidence):
-        caps["F"] = min(caps.get("F", 1.0), 0.16)
+        caps["F"] = min(caps.get("F", 1.0), 0.10)
 
     adjusted = dict(probs)
     excess = 0.0
+    capped_awards = set()
     for award, cap in caps.items():
         if adjusted.get(award, 0.0) > cap:
             excess += adjusted[award] - cap
             adjusted[award] = cap
+            capped_awards.add(award)
 
-    targets = ["M", "H", "S"]
-    if score < 80:
+    if score < 65:
         targets = ["H", "S"]
+    elif score < 74:
+        targets = ["M", "H", "S"]
+    elif score < 84:
+        targets = ["M", "H"]
+    else:
+        targets = ["F", "M", "H"]
+    targets = [key for key in targets if key not in capped_awards]
+    if not targets:
+        targets = [key for key in ["M", "H", "S"] if key not in capped_awards]
+
     target_total = sum(adjusted.get(key, 0.0) for key in targets)
     if excess > 0:
         if target_total <= 0:
@@ -191,35 +281,52 @@ def _apply_score_caps(
 
 
 def _o_ready(evidence: Dict[str, Any]) -> bool:
+    has_stability_evidence = (
+        evidence["has_sensitivity"]
+        or evidence["has_validation"]
+        or evidence["has_error_analysis"]
+        or evidence["has_model_comparison"]
+        or evidence["conclusion_score"] >= 13
+    )
     return (
         evidence["page_count"] >= 20
-        and evidence["visual_total"] >= 14
+        and evidence["visual_total"] >= 18
         and evidence["completeness"] >= 0.80
-        and evidence["has_sensitivity"]
-        and evidence["has_validation"]
+        and has_stability_evidence
         and evidence["content_score"] >= 26
         and evidence["conclusion_score"] >= 12
+        and evidence["visual_score"] >= 18
     )
 
 
 def _finalist_ready(evidence: Dict[str, Any]) -> bool:
     return (
         evidence["page_count"] >= 18
-        and evidence["visual_total"] >= 10
+        and evidence["visual_total"] >= 14
         and evidence["completeness"] >= 0.70
-        and (evidence["has_sensitivity"] or evidence["has_validation"])
         and evidence["content_score"] >= 23
+        and evidence["visual_score"] >= 17
+        and evidence["conclusion_score"] >= 9
     )
 
 
-def _calibration_note(penalty: float, reasons: list[str]) -> str:
-    if penalty <= 0:
-        return "Calibrated with stricter local award thresholds; no evidence penalty applied."
-    reason_text = "; ".join(reasons[:3])
-    return (
-        f"Calibrated with stricter local award thresholds; "
-        f"{penalty:.1f} point evidence penalty applied ({reason_text})."
-    )
+def _calibration_note(
+    penalty: float,
+    reasons: list[str],
+    bonus: float = 0.0,
+    bonus_reasons: list[str] | None = None,
+) -> str:
+    bonus_reasons = bonus_reasons or []
+    parts = ["Calibrated with v3 type-aware official-prior thresholds"]
+    if penalty > 0:
+        reason_text = "; ".join(reasons[:3])
+        parts.append(f"{penalty:.1f} point evidence penalty applied ({reason_text})")
+    else:
+        parts.append("no evidence penalty applied")
+    if bonus > 0:
+        bonus_text = "; ".join(bonus_reasons[:2])
+        parts.append(f"{bonus:.1f} point O-sample evidence bonus applied ({bonus_text})")
+    return "; ".join(parts) + "."
 
 
 def _award_from_probabilities(probabilities: Dict[str, int]) -> str:

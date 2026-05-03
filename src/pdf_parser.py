@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 import io
 import re
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import sys
@@ -30,6 +31,10 @@ class PDFParser:
         self.max_image_pixels = int(self.pdf_config.get('max_image_pixels', 8000000))
         self.abstract_keywords = self.pdf_config['abstract_keywords']
         self.intro_keywords = self.pdf_config['intro_keywords']
+        self._last_image_stats = {
+            "filtered_image_count": 0,
+            "rendered_vector_figure_count": 0,
+        }
     
     def parse(self, pdf_path: str) -> Dict:
         """
@@ -51,21 +56,31 @@ class PDFParser:
             full_text = self._extract_full_text(doc)
             
             # 提取摘要
-            abstract = self.extract_abstract(doc)
+            abstract_info = self.extract_abstract_info(doc)
+            abstract = abstract_info["text"]
             
             # 提取图片
             images = self.extract_images(doc)
             
             # 提取元数据
-            metadata = self.extract_metadata(doc, pdf_path)
+            metadata = self.extract_metadata(doc, pdf_path, full_text=full_text)
+            metadata.update(
+                {
+                    "abstract_word_count": abstract_info["word_count"],
+                    "abstract_extraction_method": abstract_info["method"],
+                    "abstract_confidence": abstract_info["confidence"],
+                    **self._last_image_stats,
+                }
+            )
             
             # 提取论文结构特征
             structure = self._analyze_paper_structure(full_text, doc)
             self._sync_abstract_structure_flag(
                 structure,
                 abstract,
-                has_abstract_heading=self._has_abstract_or_summary_heading(doc),
+                has_abstract_heading=abstract_info["confidence"] >= 0.5,
             )
+            self._attach_visual_evidence_counts(metadata, structure)
             
             doc.close()
             
@@ -91,75 +106,208 @@ class PDFParser:
             }
     
     def extract_abstract(self, doc: fitz.Document) -> str:
-        """
-        提取摘要文本
-        
-        策略：
-        1. 查找 "Abstract" 关键词
-        2. 提取到 "Introduction" 之前的文本
-        3. 如果失败，返回第一页全部文本
-        """
-        # 获取前两页文本（摘要通常在前两页）
-        text = ""
-        for page_num in range(min(2, len(doc))):
-            text += doc[page_num].get_text()
-        
-        # 方法1：通过关键词定位
-        abstract = self._extract_by_keywords(text)
-        
-        if abstract:
-            return abstract
-        
-        # 方法2：fallback - 返回第一页文本
-        print("  未找到 Abstract/Summary 关键词，使用第一页全文")
-        return doc[0].get_text()[:2000]  # 限制长度
-    
-    def _extract_by_keywords(self, text: str) -> Optional[str]:
-        """通过关键词定位摘要"""
-        # Prefer line-level headings so "MCM/ICM Summary Sheet" is not treated as
-        # the start of the actual summary.
-        heading_pattern = re.compile(
-            r"(?im)^\s*(abstract|summary)\b(?!\s+sheet)\s*[:：]?\s*$"
-        )
-        headings = list(heading_pattern.finditer(text))
+        """Return the best abstract candidate text."""
+        return self.extract_abstract_info(doc)["text"]
 
-        if headings:
-            # In MCM summary sheets the actual "Summary" heading appears after
-            # "Summary Sheet", so the last heading in the first pages is the safest.
-            abstract_start = headings[-1].end()
-        else:
-            inline_heading_pattern = re.compile(
-                r"(?im)^\s*(abstract|summary)\b(?!\s+sheet)\s*[:：]\s+"
+    def extract_abstract_info(self, doc: fitz.Document) -> Dict:
+        """Extract abstract text plus method, confidence and English token count."""
+        text = "\n".join(doc[page_num].get_text() for page_num in range(min(2, len(doc))))
+        candidates = []
+
+        for match, label, method_base in self._iter_abstract_heading_matches(text):
+            end_match = self._abstract_end_pattern().search(text, match.end())
+            end = end_match.start() if end_match else len(text)
+            candidate = self._clean_text(text[match.end():end])
+            word_count = self._count_english_tokens(candidate)
+            if word_count < 20:
+                continue
+
+            confidence = self._abstract_confidence(
+                word_count=word_count,
+                has_boundary=end_match is not None,
+                method_base=method_base,
+                label=label,
             )
-            inline_headings = list(inline_heading_pattern.finditer(text))
-            if inline_headings:
-                abstract_start = inline_headings[-1].end()
-            else:
-                text_lower = text.lower()
-                abstract_start = -1
-                for keyword in self.abstract_keywords:
-                    if keyword.lower() == "summary":
-                        continue
-                    pos = text_lower.find(keyword.lower())
-                    if pos != -1:
-                        abstract_start = pos + len(keyword)
-                        break
+            candidates.append(
+                {
+                    "text": candidate,
+                    "word_count": word_count,
+                    "method": f"{method_base}_{label.lower()}",
+                    "confidence": confidence,
+                }
+            )
 
-                if abstract_start == -1:
-                    return None
+        if not candidates:
+            summary_sheet_info = self._extract_summary_sheet_first_page_info(doc)
+            if summary_sheet_info:
+                return summary_sheet_info
+            return {
+                "text": "",
+                "word_count": 0,
+                "method": "not_found",
+                "confidence": 0.0,
+            }
 
-        end_pattern = re.compile(
-            r"(?im)^\s*(keywords?|contents|table\s+of\s+contents|"
-            r"introduction|1\.?\s+(?:introduction|problem|restatement|"
-            r"assumptions?|notation|model|our\s+work))\b"
+        return max(candidates, key=lambda item: (item["confidence"], item["word_count"]))
+
+    def _extract_by_keywords(self, text: str) -> Optional[str]:
+        """Backward-compatible keyword extractor for older callers."""
+        candidates = []
+        for match, label, method_base in self._iter_abstract_heading_matches(text):
+            end_match = self._abstract_end_pattern().search(text, match.end())
+            end = end_match.start() if end_match else len(text)
+            candidate = self._clean_text(text[match.end():end])
+            word_count = self._count_english_tokens(candidate)
+            if word_count >= 20:
+                candidates.append(
+                    (
+                        self._abstract_confidence(
+                            word_count=word_count,
+                            has_boundary=end_match is not None,
+                            method_base=method_base,
+                            label=label,
+                        ),
+                        word_count,
+                        candidate,
+                    )
+                )
+        if not candidates:
+            return None
+        return max(candidates)[2]
+
+    def _extract_summary_sheet_first_page_info(self, doc: fitz.Document) -> Optional[Dict]:
+        """Use the MCM/ICM Summary Sheet first page as the abstract when no heading exists."""
+        if len(doc) <= 0:
+            return None
+
+        text = doc[0].get_text() or ""
+        if not self._looks_like_mcm_summary_sheet(text):
+            return None
+
+        candidate = self._clean_summary_sheet_text(text)
+        word_count = self._count_english_tokens(candidate)
+        if word_count < 20:
+            return None
+
+        confidence = 0.82 if 250 <= word_count <= 650 else 0.72
+        if word_count < 80 or word_count > 850:
+            confidence -= 0.12
+        return {
+            "text": candidate,
+            "word_count": word_count,
+            "method": "summary_sheet_first_page",
+            "confidence": round(max(0.0, min(confidence, 0.95)), 2),
+        }
+
+    @staticmethod
+    def _looks_like_mcm_summary_sheet(text: str) -> bool:
+        """Return true only for contestant summary sheets, not COMAP problem statements."""
+        text = text or ""
+        has_summary_sheet = bool(re.search(r"\bsummary\s+sheet\b", text, re.I))
+        has_team_control = bool(
+            re.search(r"\bteam\s+control\s+number\b", text, re.I)
+            or re.search(r"\bteam\s*#\s*\d{5,8}\b", text, re.I)
         )
-        end_match = end_pattern.search(text, abstract_start)
-        abstract_end = end_match.start() if end_match else len(text)
+        has_problem_chosen = bool(re.search(r"\bproblem\s+chosen\b", text, re.I))
+        return has_summary_sheet and (has_team_control or has_problem_chosen)
 
-        abstract = text[abstract_start:abstract_end].strip()
-        abstract = self._clean_text(abstract)
+    def _clean_summary_sheet_text(self, text: str) -> str:
+        """Remove contest cover metadata from the first-page Summary Sheet."""
+        lines = []
+        skip_next_team_id = False
 
-        return abstract if len(abstract.split()) >= 50 else None
+        for raw_line in (text or "").splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            if not line:
+                continue
+
+            lower = line.lower()
+            if re.match(r"^team\s*#\s*\d+", line, re.I):
+                continue
+            if re.match(r"^page\s+\d+\s+of\s+\d+", line, re.I):
+                continue
+            if re.match(r"^problem\s+chosen\b", line, re.I):
+                continue
+            if re.match(r"^team\s+control\s+number\b", line, re.I):
+                skip_next_team_id = True
+                continue
+            if skip_next_team_id and re.fullmatch(r"\d{5,8}", line):
+                skip_next_team_id = False
+                continue
+            skip_next_team_id = False
+
+            if lower in {"mcm/icm", "summary sheet"}:
+                continue
+            if "summary sheet" in lower and len(line.split()) <= 5:
+                continue
+            if re.fullmatch(r"[A-F]", line):
+                continue
+            if re.fullmatch(r"20\d{2}", line):
+                continue
+            if re.fullmatch(r"\d+(?:\.\d+)?", line):
+                continue
+
+            lines.append(line)
+
+        return self._clean_text("\n".join(lines))
+
+    @staticmethod
+    def _iter_abstract_heading_matches(text: str):
+        exact = re.compile(r"(?im)^\s*(abstract|summary)\s*[:：]?\s*$")
+        inline = re.compile(r"(?im)^\s*(abstract|summary)\s*[:：]\s+(?=\S)")
+
+        matches = []
+        for match in exact.finditer(text or ""):
+            matches.append((match.start(), match, match.group(1), "heading"))
+        for match in inline.finditer(text or ""):
+            matches.append((match.start(), match, match.group(1), "inline_heading"))
+
+        for _, match, label, method_base in sorted(matches, key=lambda item: item[0]):
+            line_start = (text or "").rfind("\n", 0, match.start()) + 1
+            line_end = (text or "").find("\n", match.end())
+            if line_end == -1:
+                line_end = len(text or "")
+            line = (text or "")[line_start:line_end].strip().lower()
+            if "summary sheet" in line or "control number" in line or "team" in line:
+                continue
+            yield match, label, method_base
+
+    @staticmethod
+    def _abstract_end_pattern():
+        return re.compile(
+            r"(?im)^\s*(?:keywords?|index\s+terms?|table\s+of\s+contents|contents|"
+            r"introduction|(?:\d+|[ivxlcdm]+)\.?\s+(?:introduction|problem|"
+            r"restatement|assumptions?|notation|model)|problem\s+restatement|"
+            r"restatement\s+of\s+the\s+problem|assumptions?|notations?|"
+            r"model\s+(?:overview|formulation|establishment))\b"
+        )
+
+    @staticmethod
+    def _count_english_tokens(text: str) -> int:
+        return len(re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", text or ""))
+
+    @staticmethod
+    def _abstract_confidence(
+        *,
+        word_count: int,
+        has_boundary: bool,
+        method_base: str,
+        label: str,
+    ) -> float:
+        confidence = 0.72 if method_base == "heading" else 0.62
+        if has_boundary:
+            confidence += 0.12
+        if 250 <= word_count <= 650:
+            confidence += 0.10
+        elif 80 <= word_count <= 850:
+            confidence += 0.05
+        elif word_count < 50:
+            confidence -= 0.25
+        else:
+            confidence -= 0.08
+        if label.lower() == "summary":
+            confidence -= 0.02
+        return round(max(0.0, min(confidence, 0.98)), 2)
 
     @staticmethod
     def _sync_abstract_structure_flag(
@@ -169,7 +317,7 @@ class PDFParser:
         has_abstract_heading: bool = True,
     ) -> None:
         """Treat either Abstract or Summary extraction as a valid abstract section."""
-        if not has_abstract_heading or len((abstract or "").split()) < 50:
+        if not has_abstract_heading or PDFParser._count_english_tokens(abstract or "") < 50:
             return
 
         was_present = bool(structure.get("has_abstract"))
@@ -193,31 +341,31 @@ class PDFParser:
 
     @staticmethod
     def _has_abstract_or_summary_heading(doc: fitz.Document) -> bool:
-        """Detect an actual Abstract/Summary heading without matching Summary Sheet."""
+        """Detect an extractable Abstract/Summary heading or MCM/ICM Summary Sheet."""
         text = ""
         for page_num in range(min(2, len(doc))):
             text += doc[page_num].get_text() + "\n"
-        return bool(
-            re.search(
-                r"(?im)^\s*(abstract|summary)\b(?!\s+sheet)\s*(?:[:：]\s+|[:：]?\s*$)",
-                text,
-            )
-        )
+        return any(PDFParser._iter_abstract_heading_matches(text)) or PDFParser._looks_like_mcm_summary_sheet(text)
     
     def _clean_text(self, text: str) -> str:
         """清理文本"""
         # Join PDF line-break hyphenation before whitespace normalization.
+        text = re.sub(r'(?<=[A-Za-z])-\s*\n\s*(?=[a-z])', '', text)
         text = re.sub(r'(?<=[A-Za-z])-\s+(?=[a-z])', '', text)
         text = re.sub(r'(?<=\d)-\s+(?=[A-Za-z])', ' ', text)
-        # 移除多余空白
-        text = re.sub(r'\s+', ' ', text)
-        
         # 移除页眉页脚（通常包含 Page, Team 等）
-        lines = text.split('\n')
-        lines = [line for line in lines if not re.match(r'^\s*(Page|Team|Control Number)', line, re.I)]
-        text = '\n'.join(lines)
-        
-        return text.strip()
+        lines = []
+        for line in text.splitlines():
+            line = re.sub(r'\s+', ' ', line).strip()
+            if not line:
+                continue
+            if re.match(r'^(Page|Team|Control Number|Problem Chosen)\b', line, re.I):
+                continue
+            if re.match(r'^\d+\s*/\s*\d+$', line):
+                continue
+            lines.append(line)
+
+        return re.sub(r'\s+', ' ', ' '.join(lines)).strip()
     
     def extract_images(self, doc: fitz.Document) -> List[Image.Image]:
         """
@@ -236,6 +384,10 @@ class PDFParser:
         rendered_total = 0
         pages_with_embeds = 0
         pages_supplemented = 0
+        self._last_image_stats = {
+            "filtered_image_count": 0,
+            "rendered_vector_figure_count": 0,
+        }
 
         for page_num in range(len(doc)):
             if len(images) >= self.max_images:
@@ -288,6 +440,10 @@ class PDFParser:
 
         if not self.render_vector_figures:
             print(f"  Extracted {len(images)} embedded figures (vector page rendering disabled)")
+            self._last_image_stats = {
+                "filtered_image_count": len(images),
+                "rendered_vector_figure_count": 0,
+            }
             return images
 
         # 矢量图补充：对嵌入图很少但有大量矢量绘图的页面，渲染并提取图表区域
@@ -322,6 +478,10 @@ class PDFParser:
         else:
             print(f"  提取了 {len(images)} 张有效图片（已过滤装饰/纯色/极小图片）")
 
+        self._last_image_stats = {
+            "filtered_image_count": len(images),
+            "rendered_vector_figure_count": rendered_total,
+        }
         return images
     
     def _is_trivial_image(self, img: Image.Image) -> bool:
@@ -433,8 +593,40 @@ class PDFParser:
             merged.append((cx1, cy1, cx2, cy2))
 
         return merged
+
+    @staticmethod
+    def _attach_visual_evidence_counts(metadata: Dict, structure: Dict) -> None:
+        """Copy parse counts into metadata and synthesize scoring-safe visual evidence."""
+        filtered_image_count = int(metadata.get("filtered_image_count", 0) or 0)
+        rendered_vector_count = int(metadata.get("rendered_vector_figure_count", 0) or 0)
+        figure_caption_count = int(structure.get("figure_caption_count", 0) or 0)
+        table_caption_count = int(structure.get("table_caption_count", 0) or 0)
+        pymupdf_table_count = int(structure.get("pymupdf_table_count", 0) or 0)
+        table_count = int(structure.get("table_count", 0) or 0)
+        visual_evidence_count = max(
+            figure_caption_count,
+            filtered_image_count,
+            rendered_vector_count,
+        ) + table_count
+
+        metadata.update(
+            {
+                "image_count": visual_evidence_count,
+                "visual_evidence_count": visual_evidence_count,
+                "figure_caption_count": figure_caption_count,
+                "table_caption_count": table_caption_count,
+                "pymupdf_table_count": pymupdf_table_count,
+                "rendered_vector_figure_count": rendered_vector_count,
+            }
+        )
+        structure["visual_evidence_count"] = visual_evidence_count
     
-    def extract_metadata(self, doc: fitz.Document, pdf_path: str) -> Dict:
+    def extract_metadata(
+        self,
+        doc: fitz.Document,
+        pdf_path: str,
+        full_text: Optional[str] = None,
+    ) -> Dict:
         """
         提取元数据
         
@@ -458,9 +650,13 @@ class PDFParser:
         file_info = get_paper_info_from_filename(Path(pdf_path).name)
         metadata.update(file_info)
         
-        # 统计参考文献数量（简单方法：搜索 "References" 后的内容）
-        last_page_text = doc[-1].get_text() if len(doc) > 0 else ""
-        metadata['ref_count'] = self._count_references(last_page_text)
+        # 统计参考文献数量。优先使用全文中的 References/Bibliography 区段；
+        # 旧逻辑只看最后一页，遇到跨页参考文献时容易误报 0。
+        reference_source = full_text
+        if reference_source is None:
+            start_page = max(0, len(doc) - 3)
+            reference_source = "\n".join(doc[i].get_text() for i in range(start_page, len(doc)))
+        metadata['ref_count'] = self._count_references(reference_source)
         
         return metadata
     
@@ -532,40 +728,14 @@ class PDFParser:
         formula_count = max(1, formula_count // 2) if formula_count > 0 else 0
         structure['formula_count'] = formula_count
         
-        # 表格检测: 三种方式融合
-        # 方式1: 标题行匹配
-        table_caption_patterns = [
-            r'(?mi)^\s*Table\s+\d+[\s.:：]',
-            r'(?mi)^\s*TABLE\s+[IVXLCD]+[\s.:：]',
-            r'(?mi)^\s*Tab\.?\s+\d+[\s.:：]',
-        ]
-        table_ids = set()
-        for pat in table_caption_patterns:
-            for m in re.finditer(pat, full_text):
-                table_ids.add(m.group().strip().lower())
-
-        # 方式2: 基于文本块位置的表格布局检测
-        layout_table_count = self._detect_tables_by_layout(doc)
-
-        # 方式3: 基于视觉线条网格的表格检测（三线表等）
-        visual_table_count = self._detect_tables_by_lines(doc)
-
-        # 综合: 标题匹配 + max(布局检测, 视觉检测)
-        # 标题匹配是最可靠的（有明确 "Table X" 标题），布局/视觉补充无标题表格
-        structure['table_count'] = max(len(table_ids), layout_table_count, visual_table_count)
-        
-        # 图表标题检测: 多种格式, 行首匹配优先
-        figure_caption_patterns = [
-            r'(?mi)^\s*Figure\s+\d+[\s.:：]',             # 行首 Figure 1:
-            r'(?mi)^\s*FIGURE\s+\d+[\s.:：]',             # 行首 FIGURE 1:
-            r'(?mi)^\s*Fig\.?\s+\d+[\s.:：]',              # Fig. 1: / Fig 1.
-        ]
-        figure_ids = set()
-        for pat in figure_caption_patterns:
-            for m in re.finditer(pat, full_text):
-                figure_ids.add(m.group().strip().lower())
-
-        structure['figure_caption_count'] = len(figure_ids)
+        caption_ids = self._extract_caption_ids(full_text)
+        table_caption_count = len(caption_ids["table"])
+        figure_caption_count = len(caption_ids["figure"])
+        pymupdf_table_count = self._detect_tables_by_pymupdf(doc)
+        structure['table_caption_count'] = table_caption_count
+        structure['pymupdf_table_count'] = pymupdf_table_count
+        structure['table_count'] = max(table_caption_count, pymupdf_table_count)
+        structure['figure_caption_count'] = figure_caption_count
         
         # 总字数
         words = full_text.split()
@@ -619,6 +789,68 @@ class PDFParser:
         structure['quality_section_count'] = quality_count
         
         return structure
+
+    @staticmethod
+    def _extract_caption_ids(full_text: str) -> Dict[str, set]:
+        """Detect Figure/Fig./Table/Tab. captions and dedupe by normalized number."""
+        caption_pattern = re.compile(
+            r"(?mi)^\s*(figure|fig\.?|table|tab\.?)\s*"
+            r"([A-Za-z]?\d+(?:\s*[\(\[]\s*[A-Za-z0-9]+\s*[\)\]])?"
+            r"(?:[A-Za-z])?|[IVXLCDM]+)(?=[\s.:：\)-]|$)"
+        )
+        ids = {"figure": set(), "table": set()}
+        for match in caption_pattern.finditer(full_text or ""):
+            label = match.group(1).lower().rstrip(".")
+            number = re.sub(r"\s+", "", match.group(2).lower())
+            kind = "figure" if label in {"figure", "fig"} else "table"
+            ids[kind].add(number)
+        return ids
+
+    def _detect_tables_by_pymupdf(self, doc: fitz.Document) -> int:
+        """Use PyMuPDF table detection with line and text strategies."""
+        table_boxes = set()
+        strategies = (("lines", {}), ("text", {"strategy": "text"}))
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            for strategy_name, kwargs in strategies:
+                try:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        tables_obj = page.find_tables(**kwargs)
+                except Exception:
+                    continue
+
+                tables = getattr(tables_obj, "tables", tables_obj)
+                for table in tables or []:
+                    bbox = getattr(table, "bbox", None)
+                    if not bbox:
+                        continue
+                    rect = fitz.Rect(bbox)
+                    if rect.width < 40 or rect.height < 20:
+                        continue
+
+                    row_count = int(getattr(table, "row_count", 0) or 0)
+                    col_count = int(getattr(table, "col_count", 0) or 0)
+                    if row_count and row_count < 2:
+                        continue
+                    if col_count and col_count < 2:
+                        continue
+                    if strategy_name == "text":
+                        if rect.height > page.rect.height * 0.40:
+                            continue
+                        if col_count > 12:
+                            continue
+
+                    key = (
+                        page_num,
+                        round(rect.x0 / 4) * 4,
+                        round(rect.y0 / 4) * 4,
+                        round(rect.x1 / 4) * 4,
+                        round(rect.y1 / 4) * 4,
+                    )
+                    table_boxes.add(key)
+
+        return len(table_boxes)
 
     def _detect_tables_by_layout(self, doc: fitz.Document) -> int:
         """
@@ -724,17 +956,84 @@ class PDFParser:
         """
         统计参考文献数量
         
-        简单策略：统计 [1], [2] 或 1. 2. 这样的编号数量
+        统计 References/Bibliography 区段中的 [1]、1.、1) 等编号；
+        对 APA/作者-年份等非编号格式，用年份/DOI/URL/期刊线索做保守估计。
         """
-        # 查找 [1], [2], [3] ... 这样的引用
-        pattern1 = r'\[\d+\]'
-        matches1 = re.findall(pattern1, text)
-        
-        # 查找 1. 2. 3. ... 这样的编号（在 References 部分）
-        pattern2 = r'^\s*\d+\.\s'
-        matches2 = re.findall(pattern2, text, re.MULTILINE)
-        
-        return max(len(set(matches1)), len(matches2))
+        has_reference_heading = bool(
+            re.search(
+                r'(?im)^\s*(references?|bibliography|works\s+cited|literature\s+cited)\s*$',
+                text or "",
+            )
+        )
+        section = self._reference_section_text(text)
+        if not section.strip():
+            return 0
+
+        numbered_counts = [
+            len(set(re.findall(r'(?m)^\s*\[\s*(\d{1,3})\s*\]', section))),
+            len(set(re.findall(r'(?m)^\s*(\d{1,3})\s*[\.\)]\s+', section))),
+        ]
+        numbered_count = max(numbered_counts)
+        if numbered_count > 0:
+            return numbered_count
+
+        lines = [
+            re.sub(r'\s+', ' ', line).strip()
+            for line in section.splitlines()
+            if len(line.strip()) >= 12
+        ]
+        author_year_entries = 0
+        for line in lines:
+            has_year = re.search(r'\b(?:19|20)\d{2}[a-z]?\b', line)
+            has_reference_marker = re.search(
+                r'\b(doi|https?://|journal|proceedings|conference|press|vol\.|pp\.|arxiv|retrieved)\b',
+                line,
+                re.IGNORECASE,
+            )
+            starts_like_citation = re.search(
+                r'^[A-Z][A-Za-z\'’\-]+,\s+(?:[A-Z]\.\s*)+',
+                line,
+            ) or re.search(
+                r'^[A-Z][A-Za-z\'’\-]+(?:\s+and\s+|,\s+)[A-Z][A-Za-z\'’\-]+',
+                line,
+            )
+            if has_year and (has_reference_marker or starts_like_citation):
+                author_year_entries += 1
+
+        if author_year_entries > 0:
+            return author_year_entries
+
+        doi_or_url_count = len(re.findall(r'\b(?:doi:\s*10\.|10\.\d{4,9}/|https?://)', section, re.IGNORECASE))
+        if doi_or_url_count > 0:
+            return doi_or_url_count
+
+        years = re.findall(r'\b(?:19|20)\d{2}[a-z]?\b', section)
+        return len(years) if has_reference_heading and len(years) >= 2 else 0
+
+    @staticmethod
+    def _reference_section_text(text: str) -> str:
+        if not text:
+            return ""
+
+        headings = list(
+            re.finditer(
+                r'(?im)^\s*(references?|bibliography|works\s+cited|literature\s+cited)\s*$',
+                text,
+            )
+        )
+        if headings:
+            start = headings[-1].end()
+            tail = text[start:]
+        else:
+            tail = text[-12000:]
+
+        end_match = re.search(
+            r'(?im)^\s*(appendix|appendices|acknowledg(?:e)?ments?|supporting\s+materials?)\b',
+            tail,
+        )
+        if end_match:
+            tail = tail[:end_match.start()]
+        return tail
     
     def batch_parse(self, pdf_dir: str, recursive: bool = True) -> List[Dict]:
         """

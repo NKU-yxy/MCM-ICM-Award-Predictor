@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT / "data" / "raw"
 OUT_DIR = Path(os.getenv("BATCH_OUT_DIR", r"C:\tmp\mcm_batch_results"))
 API_URL = os.getenv("BATCH_API_URL", "http://127.0.0.1:8000/api/predict")
+BATCH_TIMEOUT = float(os.getenv("BATCH_TIMEOUT", "600") or "600")
+BATCH_JSON_RETRIES = int(os.getenv("BATCH_JSON_RETRIES", "1") or "1")
 YEARS = (2023, 2024)
 
 
@@ -74,11 +76,29 @@ def post_pdf(path: Path) -> dict[str, Any]:
     with path.open("rb") as fh:
         files = {"file": (path.name, fh, "application/pdf")}
         data = {"problem": problem, "year": year}
-        response = requests.post(API_URL, files=files, data=data, timeout=180)
+        response = requests.post(API_URL, files=files, data=data, timeout=BATCH_TIMEOUT)
     if response.status_code == 429:
         raise RuntimeError("rate_limited")
     response.raise_for_status()
     return response.json()
+
+
+def should_retry_llm_json(payload: dict[str, Any]) -> bool:
+    rubric = payload.get("llm_rubric") or {}
+    if rubric.get("status") != "failed":
+        return False
+
+    text = " ".join(
+        str(rubric.get(key) or "")
+        for key in ("comments", "raw_response", "error", "error_type")
+    ).lower()
+    return (
+        "json" in text
+        or "decode" in text
+        or "expecting value" in text
+        or "不是合法" in text
+        or "解析" in text
+    )
 
 
 def main() -> None:
@@ -94,10 +114,20 @@ def main() -> None:
     for idx, path in enumerate(pdfs, start=1):
         print(f"[{idx}/{len(pdfs)}] {path.relative_to(ROOT)}", flush=True)
         attempts = 0
+        json_retries = 0
         while True:
             attempts += 1
             try:
                 payload = post_pdf(path)
+                if should_retry_llm_json(payload) and json_retries < BATCH_JSON_RETRIES:
+                    json_retries += 1
+                    print(
+                        f"  -> LLM JSON parse failed, retry {json_retries}/{BATCH_JSON_RETRIES}",
+                        flush=True,
+                    )
+                    time.sleep(float(os.getenv("BATCH_RETRY_SLEEP", "2.0")))
+                    continue
+
                 raw_results.append({"file": str(path.relative_to(ROOT)), "response": payload})
                 row = compact_result(path, payload)
                 results.append(row)
