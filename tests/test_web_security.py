@@ -54,23 +54,29 @@ class WebSecurityTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
 
-    def test_template_mentions_v3_update(self):
+    def test_template_mentions_v4_update(self):
         html = (web_app.TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn("v3 已更新", html)
-        self.assertIn("改善参考文献数量计算", html)
-        self.assertIn("v3 版本近期评分趋势", html)
-        self.assertIn("v2 版本奖项判断分布", html)
-        self.assertIn("v1 版本奖项判断分布", html)
+        self.assertIn("v4 紧急修复", html)
+        self.assertIn("分数区间映射错误", html)
+        self.assertIn("scoreChart", html)
+        self.assertNotIn("v4ScoreChart", html)
+        self.assertIn("v4AwardChart", html)
+        self.assertIn("v3AwardChart", html)
+        self.assertIn("v2AwardChart", html)
+        self.assertIn("v1AwardChart", html)
 
-    def test_v3_migration_preserves_v1_v2_and_resets_v3(self):
+    def test_v4_migration_preserves_old_versions_and_resets_v4(self):
         saved = {
             "total_predictions": 8,
             "today_predictions": 2,
             "today_date": "2026-05-04",
-            "calibration_version": "calibrated_v2_official_prior",
-            "legacy_award_counts": {"S": 5},
-            "current_version_award_counts": {"M": 2, "H": 1},
+            "calibration_version": "calibrated_v3_type_aware_ref_abstract_visual",
+            "version_award_counts": {
+                "v1": {"S": 5},
+                "v2": {"M": 2},
+                "v3": {"H": 1},
+            },
             "recent_scores": [{"score": 80, "problem": "C", "timestamp": "2026-05-04T10:00"}],
         }
 
@@ -78,10 +84,31 @@ class WebSecurityTests(unittest.TestCase):
 
         self.assertEqual(migrated["version_award_counts"]["v1"]["S"], 5)
         self.assertEqual(migrated["version_award_counts"]["v2"]["M"], 2)
-        self.assertEqual(migrated["version_award_counts"]["v2"]["H"], 1)
-        self.assertEqual(sum(migrated["version_award_counts"]["v3"].values()), 0)
+        self.assertEqual(migrated["version_award_counts"]["v3"]["H"], 1)
+        self.assertEqual(sum(migrated["version_award_counts"]["v4"].values()), 0)
         self.assertEqual(sum(migrated["current_version_award_counts"].values()), 0)
         self.assertEqual(migrated["current_version_recent_scores"], [])
+        self.assertEqual(migrated["today_predictions"], 0)
+        self.assertEqual(migrated["total_predictions"], 8)
+
+    def test_v4_migration_recomputes_total_from_version_buckets(self):
+        saved = {
+            "total_predictions": 20,
+            "today_predictions": 2,
+            "today_date": "2026-05-04",
+            "calibration_version": "calibrated_v3_type_aware_ref_abstract_visual",
+            "version_award_counts": {
+                "v1": {"S": 5},
+                "v2": {"M": 3},
+                "v3": {"F": 4},
+            },
+        }
+
+        migrated = web_app._migrate_saved_stats(saved)
+
+        self.assertEqual(migrated["total_predictions"], 12)
+        self.assertEqual(migrated["today_predictions"], 0)
+        self.assertEqual(sum(migrated["version_award_counts"]["v4"].values()), 0)
 
 
 if __name__ == "__main__":

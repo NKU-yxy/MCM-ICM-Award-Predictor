@@ -1,4 +1,4 @@
-"""Safely repair v1/v2/v3 aggregate usage stats.
+"""Safely repair v1/v2/v3/v4 aggregate usage stats.
 
 Dry-run by default. Use --apply only after checking the printed summary.
 """
@@ -15,7 +15,7 @@ from typing import Any
 
 
 AWARDS = ("O", "F", "M", "H", "S")
-CURRENT_CALIBRATION_VERSION = "calibrated_v3_type_aware_ref_abstract_visual"
+CURRENT_CALIBRATION_VERSION = "calibrated_v4_conservative_single"
 
 
 def empty_counts() -> dict[str, int]:
@@ -62,6 +62,8 @@ def find_counts(stats: dict[str, Any], version: str) -> dict[str, int]:
         return coerce_counts(stats.get("legacy_award_counts"))
     if version == "v2":
         return coerce_counts(stats.get("current_version_award_counts"))
+    if version == "v4":
+        return coerce_counts(stats.get("current_version_award_counts"))
     return empty_counts()
 
 
@@ -91,6 +93,13 @@ def choose_counts(
                 coerce_counts(primary.get("current_version_award_counts")),
             ]
         )
+    if version == "v4":
+        candidates.extend(
+            [
+                coerce_counts(source.get("current_version_award_counts")),
+                coerce_counts(primary.get("current_version_award_counts")),
+            ]
+        )
 
     for counts in candidates:
         if count_total(counts) == expected_total:
@@ -108,7 +117,7 @@ def choose_counts(
     raise SystemExit(
         f"Cannot find {version} award counts summing to {expected_total}. "
         f"Candidate totals were: {totals}. "
-        "Pass --source PATH pointing to the pre-v3 backup, or use --allow-placeholder "
+        "Pass --source PATH pointing to the pre-v4 backup, or use --allow-placeholder "
         "only if you accept losing per-award distribution for that version."
     )
 
@@ -129,10 +138,11 @@ def load_json(path: Path) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stats", type=Path, default=stats_path_from_env())
-    parser.add_argument("--source", type=Path, help="Optional pre-v3 backup JSON to source v1/v2 counts from.")
+    parser.add_argument("--source", type=Path, help="Optional pre-v4 backup JSON to source older counts from.")
     parser.add_argument("--v1-total", type=int, required=True)
     parser.add_argument("--v2-total", type=int, required=True)
     parser.add_argument("--v3-total", type=int, default=0)
+    parser.add_argument("--v4-total", type=int, default=0)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--allow-placeholder", action="store_true")
     args = parser.parse_args()
@@ -161,18 +171,25 @@ def main() -> None:
         expected_total=args.v3_total,
         allow_placeholder=args.allow_placeholder,
     )
+    v4 = choose_counts(
+        primary=primary,
+        source=source,
+        version="v4",
+        expected_total=args.v4_total,
+        allow_placeholder=args.allow_placeholder,
+    )
 
     repaired = dict(primary)
-    repaired["version_award_counts"] = {"v1": v1, "v2": v2, "v3": v3}
-    repaired["legacy_award_counts"] = merge_counts(v1, v2)
-    repaired["current_version_award_counts"] = v3
-    repaired["award_counts"] = merge_counts(v1, v2, v3)
+    repaired["version_award_counts"] = {"v1": v1, "v2": v2, "v3": v3, "v4": v4}
+    repaired["legacy_award_counts"] = merge_counts(v1, v2, v3)
+    repaired["current_version_award_counts"] = v4
+    repaired["award_counts"] = merge_counts(v1, v2, v3, v4)
     repaired["total_predictions"] = count_total(repaired["award_counts"])
     repaired["today_date"] = str(date.today())
-    repaired["today_predictions"] = count_total(v3)
-    if count_total(v3) == 0:
+    repaired["today_predictions"] = count_total(v4)
+    if count_total(v4) == 0:
         repaired["current_version_recent_scores"] = []
-        repaired["v3_recent_scores"] = []
+        repaired["v4_recent_scores"] = []
     repaired["calibration_version"] = CURRENT_CALIBRATION_VERSION
     repaired["manual_repair"] = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -180,6 +197,7 @@ def main() -> None:
             "v1": args.v1_total,
             "v2": args.v2_total,
             "v3": args.v3_total,
+            "v4": args.v4_total,
         },
         "source": str(args.source) if args.source else str(args.stats),
     }

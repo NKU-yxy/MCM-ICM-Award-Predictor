@@ -93,9 +93,8 @@ STATS_DIR = Path(os.environ.get("RENDER_DISK_PATH", str(Path(__file__).parent / 
 STATS_FILE = STATS_DIR / "usage_stats.json"
 PREDICTIONS_LOG = STATS_DIR / "predictions.jsonl"  # 每行一条完整预测结果
 _stats_lock = threading.Lock()
-STATS_VERSION_KEYS = ("v1", "v2", "v3")
-CURRENT_STATS_VERSION = "v3"
-PREVIOUS_STATS_VERSION = "v2"
+STATS_VERSION_KEYS = ("v1", "v2", "v3", "v4")
+CURRENT_STATS_VERSION = "v4"
 
 
 def _empty_award_counts() -> dict[str, int]:
@@ -116,6 +115,7 @@ def _default_usage_stats() -> dict:
         "version_award_counts": _empty_version_award_counts(),
         "recent_scores": [],  # [{score, problem, timestamp}, ...] max 50
         "current_version_recent_scores": [],
+        "v3_recent_scores": [],
         "calibration_version": CALIBRATION_VERSION,
         "imported_legacy_sources": [],
     }
@@ -171,11 +171,21 @@ def _combined_award_counts(stats: dict) -> dict[str, int]:
     return _merge_award_counts(stats.get("legacy_award_counts", {}), stats.get("current_version_award_counts", {}))
 
 
-def _version_counts_from_legacy_current(legacy_counts: dict, current_counts: dict) -> dict[str, dict[str, int]]:
-    version_counts = _empty_version_award_counts()
-    version_counts["v1"] = _coerce_award_counts(legacy_counts)
-    version_counts["v2"] = _coerce_award_counts(current_counts)
-    return version_counts
+def _legacy_bucket_for_saved_calibration(calibration_version: str) -> str:
+    calibration_version = str(calibration_version or "")
+    if "v3" in calibration_version:
+        return "v3"
+    if "v2" in calibration_version:
+        return "v2"
+    return "v1"
+
+
+def _merge_previous_version_counts(version_counts: dict[str, dict[str, int]]) -> dict[str, int]:
+    merged = _empty_award_counts()
+    for version, counts in version_counts.items():
+        if version != CURRENT_STATS_VERSION:
+            merged = _merge_award_counts(merged, counts)
+    return merged
 
 
 def _source_signature(path: Path) -> str:
@@ -213,6 +223,7 @@ def _migrate_saved_stats(saved: dict) -> dict:
     stats["current_version_recent_scores"] = _recent_scores(
         saved.get("current_version_recent_scores")
     )
+    stats["v3_recent_scores"] = _recent_scores(saved.get("v3_recent_scores"))
     stats["imported_legacy_sources"] = list(saved.get("imported_legacy_sources") or [])
 
     if saved.get("calibration_version") == CALIBRATION_VERSION:
@@ -230,30 +241,44 @@ def _migrate_saved_stats(saved: dict) -> dict:
                 "current_version_award_counts"
             ]
     else:
-        # Migrating to v3: keep old data visible, but reset v3 to post-deploy runs only.
+        # Migrating to a new calibration version: keep old data visible, but
+        # reset the current bucket to post-deploy runs only.
         old_legacy_counts = _coerce_award_counts(saved.get("legacy_award_counts"))
         old_current_counts = _coerce_award_counts(saved.get("current_version_award_counts"))
         old_award_counts = _coerce_award_counts(saved.get("award_counts"))
-        if any(old_legacy_counts.values()) or any(old_current_counts.values()):
-            stats["version_award_counts"] = _version_counts_from_legacy_current(
-                old_legacy_counts,
-                old_current_counts,
-            )
+        old_version_counts = _coerce_version_award_counts(saved.get("version_award_counts"))
+        if any(any(counts.values()) for counts in old_version_counts.values()):
+            stats["version_award_counts"] = old_version_counts
+            if (
+                _legacy_bucket_for_saved_calibration(saved.get("calibration_version")) == "v3"
+                and not stats["v3_recent_scores"]
+            ):
+                stats["v3_recent_scores"] = _recent_scores(
+                    saved.get("current_version_recent_scores")
+                )
+        elif any(old_legacy_counts.values()) or any(old_current_counts.values()):
+            stats["version_award_counts"] = _empty_version_award_counts()
+            stats["version_award_counts"]["v1"] = old_legacy_counts
+            saved_bucket = _legacy_bucket_for_saved_calibration(saved.get("calibration_version"))
+            stats["version_award_counts"][saved_bucket] = old_current_counts
+            if saved_bucket == "v3" and not stats["v3_recent_scores"]:
+                stats["v3_recent_scores"] = _recent_scores(
+                    saved.get("current_version_recent_scores")
+                )
         else:
             stats["version_award_counts"] = _empty_version_award_counts()
             stats["version_award_counts"]["v1"] = old_award_counts
 
-        stats["legacy_award_counts"] = _merge_award_counts(
-            stats["version_award_counts"].get("v1", {}),
-            stats["version_award_counts"].get(PREVIOUS_STATS_VERSION, {}),
-        )
+        stats["legacy_award_counts"] = _merge_previous_version_counts(stats["version_award_counts"])
         stats["current_version_award_counts"] = _empty_award_counts()
         stats["current_version_recent_scores"] = []
+        stats["today_predictions"] = 0
         stats["imported_legacy_sources"].append(f"primary:{_source_signature(STATS_FILE)}")
 
     if stats["today_date"] != str(date.today()):
         stats["today_predictions"] = 0
         stats["today_date"] = str(date.today())
+    stats["total_predictions"] = sum(_combined_award_counts(stats).values())
     stats["imported_legacy_sources"] = sorted(set(stats["imported_legacy_sources"]))
     return stats
 
@@ -492,12 +517,14 @@ def _stats_snapshot() -> dict:
         "v1_award_counts": version_counts["v1"],
         "v2_award_counts": version_counts["v2"],
         "v3_award_counts": version_counts["v3"],
+        "v4_award_counts": version_counts["v4"],
         "award_counts": _combined_award_counts(_usage_stats),
         "recent_scores": _recent_scores(_usage_stats.get("recent_scores")),
         "current_version_recent_scores": _recent_scores(
             _usage_stats.get("current_version_recent_scores")
         ),
-        "v3_recent_scores": _recent_scores(_usage_stats.get("current_version_recent_scores")),
+        "v3_recent_scores": _recent_scores(_usage_stats.get("v3_recent_scores")),
+        "v4_recent_scores": _recent_scores(_usage_stats.get("current_version_recent_scores")),
         "calibration_version": CALIBRATION_VERSION,
         "imported_legacy_sources": list(_usage_stats.get("imported_legacy_sources") or []),
     }
@@ -802,12 +829,14 @@ async def stats():
             "v1_award_counts": version_counts["v1"],
             "v2_award_counts": version_counts["v2"],
             "v3_award_counts": version_counts["v3"],
+            "v4_award_counts": version_counts["v4"],
             "award_counts": _combined_award_counts(_usage_stats),
             "recent_scores": _recent_scores(_usage_stats.get("recent_scores")),
             "current_version_recent_scores": _recent_scores(
                 _usage_stats.get("current_version_recent_scores")
             ),
-            "v3_recent_scores": _recent_scores(_usage_stats.get("current_version_recent_scores")),
+            "v3_recent_scores": _recent_scores(_usage_stats.get("v3_recent_scores")),
+            "v4_recent_scores": _recent_scores(_usage_stats.get("current_version_recent_scores")),
             "calibration_version": CALIBRATION_VERSION,
         }
 

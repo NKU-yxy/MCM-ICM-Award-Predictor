@@ -58,10 +58,11 @@ class AwardCalibratorTests(unittest.TestCase):
         )
 
         self.assertEqual(calibrated["calibration_version"], CALIBRATION_VERSION)
-        self.assertIn(calibrated["award_prediction"], {"M", "F"})
+        self.assertEqual(calibrated["award_prediction"], "M")
         self.assertGreaterEqual(calibrated["probabilities"]["M"], calibrated["probabilities"]["H"])
+        self.assertGreater(calibrated["probabilities"]["M"], calibrated["probabilities"]["F"])
 
-    def test_strong_score_87_allows_finalist_and_nonzero_o(self):
+    def test_strong_score_87_with_full_evidence_can_reach_finalist(self):
         calibrated = calibrate_rubric_award(
             _rubric(
                 87,
@@ -79,7 +80,48 @@ class AwardCalibratorTests(unittest.TestCase):
         )
 
         self.assertEqual(calibrated["award_prediction"], "F")
-        self.assertGreater(calibrated["probabilities"]["O"], 0)
+        self.assertGreater(calibrated["probabilities"]["F"], calibrated["probabilities"]["M"])
+        self.assertLessEqual(calibrated["probabilities"]["O"], 5)
+
+    def test_score_84_is_not_default_finalist_even_with_raw_f_signal(self):
+        calibrated = calibrate_rubric_award(
+            _rubric(
+                84,
+                details={
+                    "content_score": 27,
+                    "length_style_score": 17,
+                    "visual_score": 21,
+                    "conclusion_score": 12,
+                    "writing_score": 7,
+                },
+                probabilities={"O": 5, "F": 45, "M": 35, "H": 12, "S": 3},
+            ),
+            metadata=_metadata(),
+            structure=_structure(),
+        )
+
+        self.assertEqual(calibrated["award_prediction"], "M")
+        self.assertGreater(calibrated["probabilities"]["M"], calibrated["probabilities"]["F"])
+
+    def test_score_95_with_strong_evidence_allows_finalist_not_o_spike(self):
+        calibrated = calibrate_rubric_award(
+            _rubric(
+                95,
+                details={
+                    "content_score": 29,
+                    "length_style_score": 18,
+                    "visual_score": 22,
+                    "conclusion_score": 14,
+                    "writing_score": 9,
+                },
+                probabilities={"O": 10, "F": 45, "M": 35, "H": 8, "S": 2},
+            ),
+            metadata=_metadata(page_count=24, visual_evidence_count=24),
+            structure=_structure(),
+        )
+
+        self.assertEqual(calibrated["award_prediction"], "F")
+        self.assertLessEqual(calibrated["probabilities"]["O"], 5)
 
     def test_weak_score_60_stays_s_or_h(self):
         calibrated = calibrate_rubric_award(
@@ -135,7 +177,8 @@ class AwardCalibratorTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(calibrated["calibrated_score"], 82)
-        self.assertIn(calibrated["award_prediction"], {"M", "F"})
+        self.assertEqual(calibrated["award_prediction"], "M")
+        self.assertGreater(calibrated["probabilities"]["M"], calibrated["probabilities"]["F"])
 
 
 if __name__ == "__main__":
